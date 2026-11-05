@@ -30,11 +30,16 @@ def encrypt_payload(payload: dict, passphrase: str) -> dict:
     return {"v": 2, "iter": PBKDF2_ITER, "salt": b64(salt), "iv": b64(iv), "ct": b64(ct)}
 
 
+def _lab_summary() -> dict | None:
+    f = config.ROOT / "docs" / "lab_summary.json"
+    return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+
+
 def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
     today = today or datetime.now(JST).date().isoformat()
     races = {}
     for r in con.execute("""SELECT r.*, c.name AS course FROM race r JOIN racecourse c USING(course_code)
-                            WHERE r.race_date>=? ORDER BY r.race_date, r.post_time, r.race_no""", (today,)):
+                            WHERE r.race_date>=? AND r.course_code NOT LIKE 'N帯広%' ORDER BY r.race_date, r.post_time, r.race_no""", (today,)):
         races[r["race_id"]] = {"id": r["race_id"], "org": r["org"], "date": r["race_date"], "course": r["course"], "no": r["race_no"],
                                "time": r["post_time"], "name": r["name"], "grade": r["grade"], "class": r["class_name"],
                                "surface": r["surface"], "distance": r["distance"], "going": r["going"], "weather": r["weather"],
@@ -93,6 +98,7 @@ def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
         "backtests": reports("backtest"),
         "compare": reports("compare"),
         "forward": reports("forward"),
+        "lab": _lab_summary(),
         "today": today,
         "data_status": {
             "counts": [dict(r) for r in con.execute("SELECT org,COUNT(*) AS races,MIN(race_date) AS first,MAX(race_date) AS last FROM race GROUP BY org")],

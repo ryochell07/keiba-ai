@@ -36,7 +36,7 @@ def assert_time_split(train_dates: pd.Series, test_dates: pd.Series) -> None:
 
 
 def walk_forward_scores(frame: pd.DataFrame, feats: pd.DataFrame, org: str, test_start: str, step_months: int,
-                        n_seeds: int = 1, min_train_races: int = 300) -> tuple[pd.DataFrame, dict]:
+                        n_seeds: int = 1, min_train_races: int = 300, groups=None, params=None) -> tuple[pd.DataFrame, dict]:
     """fold ごとに再学習し、評価期間のスコアを返す。"""
     results = []
     folds = []
@@ -49,7 +49,7 @@ def walk_forward_scores(frame: pd.DataFrame, feats: pd.DataFrame, org: str, test
         if te.sum() == 0 or frame[tr]["race_id"].nunique() < min_train_races:
             continue
         assert_time_split(frame.loc[tr, "race_date"], frame.loc[te, "race_date"])
-        model = train_race_model(frame[tr].reset_index(drop=True), feats[tr].reset_index(drop=True), org, n_seeds=n_seeds)
+        model = train_race_model(frame[tr].reset_index(drop=True), feats[tr].reset_index(drop=True), org, n_seeds=n_seeds, groups=groups, params=params)
         test_frame = frame[te].reset_index(drop=True)
         s = model.scores(feats[te].reset_index(drop=True))
         results.append(test_frame.assign(score=s, tau1=model.taus[0], tau2=model.taus[1], tau3=model.taus[2]))

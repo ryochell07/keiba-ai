@@ -118,12 +118,22 @@ def cmd_daily(args, con, sources):
     return 0
 
 
+def cmd_lab(args, con, sources):
+    from .lab import run_stage
+    print(json.dumps(run_stage(con, args.org, args.stage, confirm=args.confirm_locked_test), ensure_ascii=False, indent=1, default=str))
+
+
 def cmd_state(args, con, sources):
     from .state import pack, unpack
     print(pack(args.path) if args.action == "pack" else unpack(args.path))
 
 
 def register(sub):
+    p = sub.add_parser("lab", help="精度改善の実験 (封鎖テスト期間は既定で使わない)")
+    p.add_argument("stage", choices=["baseline", "analyze", "history", "groups", "models", "calibrate", "split", "market", "final", "list", "summary"])
+    p.add_argument("--org", choices=["JRA", "NAR"], default="NAR")
+    p.add_argument("--confirm-locked-test", action="store_true", help="final で封鎖テストを使うことを明示する")
+    p.set_defaults(func=cmd_lab)
     p = sub.add_parser("train", help="新モデルを学習し、旧モデルより良ければ採用")
     p.add_argument("--org", choices=["JRA", "NAR"])
     p.add_argument("--seeds", type=int, default=3)

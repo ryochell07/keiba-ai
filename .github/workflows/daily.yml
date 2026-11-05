@@ -14,7 +14,7 @@ concurrency: {group: keiba-state, cancel-in-progress: false}
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
       KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}

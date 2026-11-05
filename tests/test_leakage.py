@@ -79,3 +79,68 @@ def test_時系列分割の検査():
     with pytest.raises(AssertionError):
         assert_time_split(pd.Series(["2024-02-01"]), pd.Series(["2024-02-01"]))
     assert_time_split(pd.Series(["2024-01-31"]), pd.Series(["2024-02-01"]))
+
+
+def test_追加特徴も当日の後のレースの結果を見ない(filled, con):
+    from conftest import make_race
+    from keiba_ai.ingest import save_race
+    day = "2024-06-20"
+    for no, seed in ((1, 301), (5, 302), (9, 303)):
+        r = make_race(day, no=no, seed=seed, n=6)
+        for e in r.entries:
+            e.horse_id = f"D{no}{e.umaban}"
+        save_race(con, r)
+    con.commit()
+    df = _f(con)
+    base = build_features(df)
+    later = df["race_id"].str.endswith("0509")
+    mutated = df.copy()
+    mutated.loc[later, "corners"] = "1,1"
+    mutated.loc[later, "finish_pos"] = mutated.loc[later, "finish_pos"].to_numpy()[::-1]
+    after = build_features(mutated)
+    earlier = df["race_id"].str.endswith(("0501", "0505")) & (df["race_date"] == day)
+    cols = [c for c in base.columns if c.startswith("x_day")]
+    pd.testing.assert_frame_equal(base.loc[earlier, cols], after.loc[earlier, cols], check_exact=False)
+    # 前のレースの結果は後のレースに反映される
+    first = df["race_id"].str.endswith("0501") & (df["race_date"] == day)
+    mutated2 = df.copy()
+    mutated2.loc[first, "corners"] = "9,9"
+    after2 = build_features(mutated2)
+    last = later & (df["race_date"] == day)
+    assert not base.loc[last, "x_day_win_corner"].equals(after2.loc[last, "x_day_win_corner"])
+
+
+def test_封鎖期間は開発データに入らない():
+    from keiba_ai.lab import LockedTestError, assert_dev_only, run_stage
+    assert_dev_only(pd.DataFrame({"race_date": ["2026-02-28"]}))
+    with pytest.raises(LockedTestError):
+        assert_dev_only(pd.DataFrame({"race_date": ["2026-03-01"]}))
+    with pytest.raises(LockedTestError):
+        run_stage(None, "NAR", "final")
+
+
+def test_当該レースの人気を変えても過去人気の特徴量は変わらない(filled):
+    df = _f(filled)
+    base = build_features(df)
+    mutated = df.copy()
+    target = mutated["race_date"] == TARGET
+    mutated.loc[target, "popularity_final"] = 1
+    after = build_features(mutated)
+    cols = [c for c in base.columns if c.startswith("x_pastmkt")]
+    pd.testing.assert_frame_equal(base.loc[target, cols], after.loc[target, cols], check_exact=False)
+
+
+def test_最終評価は1回しか実行できない(con):
+    from keiba_ai.lab_final import stage_final
+    con.execute("INSERT INTO experiment(experiment_id,created_at,stage,name,org) VALUES ('x','2026','final','n','NAR')")
+    with pytest.raises(SystemExit, match="実行済み"):
+        stage_final(con, "NAR")
+
+
+def test_採用グループの列だけがモデルに入る(filled):
+    from keiba_ai.features import FeatureSpec
+    f = build_features(_f(filled))
+    spec = FeatureSpec.fit(f, groups=("speed",))
+    x_cols = [c for c in spec.columns if c.startswith("x_")]
+    assert x_cols and all(c.startswith("x_speed_") for c in x_cols)
+    assert not [c for c in FeatureSpec.fit(f, groups=()).columns if c.startswith("x_")]

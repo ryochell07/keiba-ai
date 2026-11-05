@@ -97,6 +97,21 @@ def parse_nar_time(v: str | None) -> float | None:
     return int(v[:-3] or 0) * 60 + int(v[-3:-1]) + int(v[-1]) / 10
 
 
+def parse_corner_order(text: str | None) -> dict[int, int]:
+    """コーナー通過順 "1,3,13,(2,7),4-5" を {馬番: 順位} にする。括弧内は同順位。"""
+    text = clean(text)
+    out: dict[int, int] = {}
+    if not text:
+        return out
+    pos = 1
+    for group, single in re.findall(r"\(([^)]*)\)|(\d+)", text):
+        nums = [int(x) for x in re.findall(r"\d+", group)] if group else [int(single)]
+        for n in nums:
+            out.setdefault(n, pos)
+        pos += len(nums)
+    return out
+
+
 def course_code(name: str) -> str:
     return f"N{clean(name)}"
 
@@ -119,6 +134,7 @@ def _reader(text: str, section: dict, filename: str) -> tuple[csv.DictReader, di
 
 def parse_race_files(racelist: str, horselist: str, payback: str | None, columns: dict) -> list[RaceRec]:
     races: dict[tuple, RaceRec] = {}
+    corner_orders: dict[tuple, list[dict[int, int]]] = {}
     reader, c = _reader(racelist, columns["racelist"], "racelist")
     for row in reader:
         rdate = to_date(row[c["date"]])
@@ -133,6 +149,8 @@ def parse_race_files(racelist: str, horselist: str, payback: str | None, columns
             name=clean(row[c["name"]]), race_kind=clean(row[c["race_kind"]]), conditions=clean(row[c["conditions"]]),
             surface=clean(row[c["surface"]]), distance=to_int(row[c["distance"]]), direction=clean(row[c["direction"]]),
             weather=clean(row[c["weather"]]), going=clean(row[c["going"]]), n_runners=to_int(row[c["n_runners"]]))
+        orders = [parse_corner_order(row.get(f"コーナー通過順{i}")) for i in range(1, 9)]
+        corner_orders[(course, rdate, no)] = [o for o in orders if o]
     reader, c = _reader(horselist, columns["horselist"], "horselist")
     for row in reader:
         key = (clean(row[c["course"]]), to_date(row[c["date"]]), to_int(row[c["race_no"]]))
@@ -158,7 +176,8 @@ def parse_race_files(racelist: str, horselist: str, payback: str | None, columns
             birth_date=birth, coat=clean(row[c["coat"]]), sire=clean(row[c["sire"]]), dam=clean(row[c["dam"]]),
             damsire=clean(row[c["damsire"]]), owner=clean(row[c["owner"]]), breeder=clean(row[c["breeder"]]),
             finish_pos=finish, status=status, time_sec=parse_nar_time(row[c["time"]]), margin=clean(row[c["margin"]]),
-            last3f=to_float(row[c["last3f"]]), popularity_final=to_int(row[c["popularity"]])))
+            last3f=to_float(row[c["last3f"]]), popularity_final=to_int(row[c["popularity"]]),
+            corners=",".join(str(o.get(umaban, "")) for o in corner_orders.get(key, [])) or None))
     for race in races.values():
         # 結果が出ているレースで着順が空欄の馬は、取消・除外とみなす (出走頭数に数えない)
         if any(e.finish_pos for e in race.entries):
@@ -290,23 +309,23 @@ class NarCsvProvider(Provider):
             args.append(on_day)
         return con.execute(sql + " LIMIT 1", args).fetchone() is not None
 
-    def fetch_month(self, con, year: int, month: int, kind: str = "Race", odds_filter=None, once_per_day_only: bool = False) -> dict:
+    def fetch_month(self, con, year: int, month: int, kind: str = "Race", odds_filter=None, once_per_day_only: bool = False, refresh: bool = False) -> dict:
         """月次ファイル。確定済みの月は1回だけ、更新中の月は1日1回まで取得する (説明書FAQの目安)。"""
         ref = f"{year}{month:02d}{kind}"
         today = datetime.now(JST).date().isoformat()
-        if self._fetched_ok(con, ref, today if once_per_day_only else None):
+        if self._fetched_ok(con, ref, today if (once_per_day_only or refresh) else None):
             return {"file": ref, "skipped": True}
         raw = self._download(kind, f"type=monthly&k_year={year}&k_month={month}", ref)
         name = f"{year}{month:02d}_{int(datetime.now(JST).timestamp())}_{kind.lower()}.zip"
-        return import_bytes(con, raw, name, odds_filter=odds_filter)
+        return import_bytes(con, raw, name, odds_filter=odds_filter, force=refresh)
 
-    def backfill(self, con, start: str, end: str, odds_from: str | None = "2026-03", full_odds_from: str | None = None) -> list[dict]:
+    def backfill(self, con, start: str, end: str, odds_from: str | None = "2026-03", full_odds_from: str | None = None, refresh: bool = False) -> list[dict]:
         """過去の月次ファイルを古い順に取り込む。オッズは容量が大きいので、古い月は単勝・複勝だけ保存する。"""
         out = []
         for y, m in reversed(month_range(start, end)):
             ym = f"{y}-{m:02d}"
             this_month = ym == datetime.now(JST).strftime("%Y-%m")
-            out.append(self.fetch_month(con, y, m, "Race", once_per_day_only=this_month))
+            out.append(self.fetch_month(con, y, m, "Race", once_per_day_only=this_month, refresh=refresh))
             if odds_from and ym >= odds_from:
                 full = bool(full_odds_from and ym >= full_odds_from)
                 out.append(self.fetch_month(con, y, m, "Odds", odds_filter=None if full else _win_place,

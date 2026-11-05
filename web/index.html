@@ -23,8 +23,8 @@ h1{font-size:16px;margin:0;font-weight:700}
 .seg button{border:0;background:none;padding:5px 11px;border-radius:6px;font-size:13px;min-height:32px}
 .seg button[aria-pressed=true]{background:var(--card);font-weight:600;box-shadow:0 0 0 1px var(--line)}
 main{padding:14px 16px 96px;max-width:980px;margin:auto}
-nav.bottom{position:fixed;bottom:0;left:0;right:0;z-index:6;background:var(--card);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(5,1fr);padding-bottom:env(safe-area-inset-bottom)}
-nav.bottom button{border:0;background:none;padding:10px 2px 9px;font-size:12.5px;color:var(--sub);min-height:52px}
+nav.bottom{position:fixed;bottom:0;left:0;right:0;z-index:6;background:var(--card);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(6,1fr);padding-bottom:env(safe-area-inset-bottom)}
+nav.bottom button{border:0;background:none;padding:10px 1px 9px;font-size:12px;color:var(--sub);min-height:52px}
 nav.bottom button[aria-current=page]{color:var(--acc);font-weight:700;box-shadow:inset 0 2px 0 var(--acc)}
 .filters{display:flex;gap:6px;overflow-x:auto;margin:0 -16px 12px;padding:0 16px;scrollbar-width:none}
 .filters::-webkit-scrollbar{display:none}
@@ -110,7 +110,7 @@ async function unlock(pw,remember){
 $('#f').addEventListener('submit',ev=>{ev.preventDefault();unlock($('#pw').value,$('#rem').checked)});
 let D=null;
 const S={tab:'home',org:'all',date:null,race:null,bet:'win',detailBet:'win',rank:'ev',aorg:null};
-const TABS=[['home','今日'],['races','レース'],['rank','ランキング'],['analysis','分析'],['status','状態']];
+const TABS=[['home','今日'],['races','レース'],['rank','ランキング'],['analysis','分析'],['lab','モデル'],['status','状態']];
 const R={},P={};
 const BET_ORDER=['win','place','bracket_quinella','quinella','wide','exacta','trio','trifecta','bracket_exacta'];
 function start(){
@@ -207,6 +207,24 @@ analysis(){const orgs=Object.keys(D.backtests);if(!orgs.length)return '<div clas
   <h2>候補馬の絞り込み検証</h2><div class="card scroll"><table><tr><th>候補頭数</th><th>1-3着を含む割合</th></tr>${Object.entries(b.candidate_coverage).map(([k,v])=>`<tr><td>上位${k}頭</td><td>${pct0(v)}</td></tr>`).join('')}</table></div>
   ${cmp?`<h2>新旧モデルの比較</h2><div class="card"><div class="meta">${esc(cmp.reason)}（${esc(cmp.holdout[0])}〜${esc(cmp.holdout[1])}）</div><div class="scroll"><table><tr><th>指標</th><th>旧</th><th>新</th></tr>${[['Log Loss','win_logloss_model',3],['Brier','brier',3],['本命的中','top1_hit',3],['本命回収率','top1_win_roi',3],['レース数','n_races',0]].map(([l,k,d])=>`<tr><td>${l}</td><td>${(+cmp.old[k]).toFixed(d)}</td><td>${(+cmp.new[k]).toFixed(d)}</td></tr>`).join('')}</table></div></div>`:''}
   ${D.compare[org]?`<h2>手法の比較</h2><div class="card scroll"><table><tr><th>モデル</th><th>Log Loss</th><th>本命的中</th></tr>${D.compare[org].map(c=>`<tr><td>${esc(c.model)}</td><td>${c.win_logloss==null?'-':c.win_logloss.toFixed(3)}</td><td>${pct0(c.top1_hit)}</td></tr>`).join('')}</table></div>`:''}`},
+lab(){const L=D.lab;if(!L)return '<div class="empty">改善実験の結果はまだありません。</div>';const F=L.final;
+  const row=(name,r,dec)=>`<tr><td class="name">${esc(name)}</td><td>${r.log_loss.toFixed(4)}</td><td>${r.brier.toFixed(4)}</td><td>${pct0(r.top1_hit)}</td><td>${pct0(r.roi)}</td><td>${dec||''}</td></tr>`;
+  const head='<tr><th>モデル</th><th>Log Loss</th><th>Brier</th><th>的中</th><th>回収率</th><th></th></tr>';
+  const bets=['win','place','bracket_quinella','quinella','wide','exacta','trio','trifecta','bracket_exacta'];
+  const fmtD=v=>v==null?'-':(v>=0?'+':'')+v.toFixed(4);
+  const thr=['1.0','1.05','1.1','1.15','1.2','1.3','1.5'];
+  const cell=(b,t)=>{const r=F.rows.find(x=>x.bet_type===b&&x.strategy==='blend_ev_'+t);return r?`<td>${r.n_bets}<div class="meta">${(r.roi*100).toFixed(0)}%</div></td>`:'<td>-</td>'};
+  return `<div class="notice">市場を安定して上回るモデルと、回収率100%を超える買い方は、まだ見つかっていません。</div>
+  <h2>封鎖テストの結果</h2><p class="meta">2026-03〜11の${F.new.n_races}レースを、設定を確定してから1回だけ評価しました。市場は確定オッズで、発走前の予測と同じ時点ではない参考値です。</p>
+  <div class="card scroll"><table>${head}${row('現行',F.baseline,'基準')}${row('新モデル',F.new,F.adopted?'採用':'不採用')}${row('市場(確定オッズ)',F.market_reference_final_odds,'参考')}</table></div>
+  <p class="meta">新モデルと現行のLog Loss差 ${fmtD(F.new.delta_log_loss)}（95%区間 ${fmtD(F.new.delta_ci_low)}〜${fmtD(F.new.delta_ci_high)}）</p>
+  <h2>市場との融合</h2><p class="meta">${esc(F.blend.evaluated_from)}以降で評価。差は市場との比較です。</p><div class="card scroll"><table><tr><th>方式</th><th>Log Loss</th><th>Brier</th><th>市場との差</th><th>95%区間</th></tr>${Object.entries(F.market_compare).map(([k,r])=>`<tr><td class="name">${esc(k)}</td><td>${r.log_loss.toFixed(4)}</td><td>${r.brier.toFixed(4)}</td><td>${fmtD(r.delta_log_loss)}</td><td>${r.delta_ci_low==null?'-':fmtD(r.delta_ci_low)+'〜'+fmtD(r.delta_ci_high)}</td></tr>`).join('')}</table></div>
+  <h2>期待値別の成績</h2><p class="meta">合成確率で判定した買い目の点数と回収率です。確定オッズ判定なので実際より良く出ます。${F.n_tests}通りを試し、合格は${F.passed_candidates.length}件です（500点以上かつ95%区間の下限が100%超）。</p>
+  <div class="card scroll"><table><tr><th>券種</th>${thr.map(t=>`<th>${(+t*100).toFixed(0)}%</th>`).join('')}</tr>${bets.filter(b=>F.rows.some(r=>r.bet_type===b&&r.strategy.startsWith('blend_'))).map(b=>`<tr><td>${esc(label(b))}</td>${thr.map(t=>cell(b,t)).join('')}</tr>`).join('')}</table></div>
+  <div class="cols"><section class="card" style="margin-top:8px"><h3>確率の校正(封鎖テスト)</h3><div class="meta">線に近いほど正確です</div>${calibChart(F.calibration)}</section></div>
+  <h2>手法の比較(開発期間)</h2><p class="meta">2025-09〜2026-02の未使用期間で比較しました。確定人気の代用は順位だけから作った基準線です。</p><div class="card scroll"><table>${head}${L.models.table.map(r=>row(r.model,r,'')).join('')}</table></div>
+  <h2>特徴量の採否</h2><div class="card scroll"><table><tr><th>グループ</th><th>Log Loss差</th><th>95%区間</th><th>判定</th></tr>${L.groups.groups.map(g=>`<tr><td>${esc(({speed:'スピード指数',apt:'条件別能力',opp:'相手関係',pace:'展開',jk:'騎手・調教師',course:'コース傾向',day:'当日傾向',cond:'競走条件',pastmkt:'過去の人気'})[g.group]||g.group)}</td><td>${fmtD(g.delta_log_loss)}</td><td>${fmtD(g.delta_ci_low)}〜${fmtD(g.delta_ci_high)}</td><td>${g.adopt?'採用':'不採用'}</td></tr>`).join('')}</table></div>
+  <h2>実験の記録</h2><details><summary>全${L.experiments.length}件を表示</summary><div class="card scroll"><table><tr><th>段階</th><th>名前</th><th>Log Loss</th><th>差</th><th>的中</th><th>回収率</th></tr>${L.experiments.map(x=>`<tr><td>${esc(x.stage)}${x.used_locked_test?' *':''}</td><td class="name">${esc(x.name)}</td><td>${x.log_loss==null?'-':(+x.log_loss).toFixed(4)}</td><td>${fmtD(x.delta_log_loss==null?null:+x.delta_log_loss)}</td><td>${pct0(x.top1_hit)}</td><td>${pct0(x.roi)}</td></tr>`).join('')}</table></div><p class="meta">* は封鎖テストを使った記録です。</p></details>`},
 status(){const d=D.data_status;return `<h2>蓄積データ</h2><div class="card scroll"><table><tr><th>主催</th><th>レース数</th><th>開始</th><th>最新</th></tr>${d.counts.map(c=>`<tr><td>${c.org==='JRA'?'中央':'地方'}</td><td>${c.races}</td><td>${c.first}</td><td>${c.last}</td></tr>`).join('')}</table></div>
   ${d.counts.some(c=>c.org==='NAR')?'':'<div class="notice">地方競馬のデータはまだありません。公式サイトから取得したZIPの取り込みが必要です。</div>'}
   <h2>モデル</h2>${Object.values(D.models).map(m=>`<div class="card"><b>${m.org==='JRA'?'中央':'地方'}</b> <span class="meta">${esc(m.model_version_id)}</span><div class="meta">学習期間 ${esc(m.train_start)}〜${esc(m.train_end)}</div></div>`).join('')||'<div class="empty">未学習</div>'}
@@ -234,7 +252,7 @@ function strategyTable(rows){const name={none:'オッズ不使用',final_optimis
 // ---- グラフ: 線2px・棒は上限24px・ホバーとフォーカスで値表示・表で全値を確認できる ----
 function chartCard(title,sub,c){return `<section class="card"><h3>${esc(title)}</h3>${sub?`<div class="meta">${esc(sub)}</div>`:''}${c}</section>`}
 const W=340,PAD={l:40,r:10,t:10,b:24};
-const nice=(lo,hi,n=4)=>{const span=(hi-lo)||1,st=Math.pow(10,Math.floor(Math.log10(span/n)));const e=span/n/st;const step=(e<1.5?1:e<3?2:e<7?5:10)*st;const out=[];for(let v=Math.floor(lo/step)*step;v<=hi+step*.001;v+=step)out.push(+v.toFixed(6));return out};
+const nice=(lo,hi,n=4)=>{const span=(hi-lo)||1,st=Math.pow(10,Math.floor(Math.log10(span/n)));const e=span/n/st;const step=(e<1.5?1:e<3?2:e<7?5:10)*st;const out=[];const top=Math.ceil(hi/step-1e-9)*step;for(let v=Math.floor(lo/step)*step;v<=top+step*.001;v+=step)out.push(+v.toFixed(6));return out};
 function tableFor(head,rows){return `<details><summary>表で見る</summary><div class="scroll"><table><tr>${head.map(h=>`<th>${esc(h)}</th>`).join('')}</tr>${rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table></div></details>`}
 function lineChart(series,o){series=series.filter(s=>s.pts.length);if(!series.length)return '<div class="empty">データなし</div>';const H=170,xs=[...new Set(series.flatMap(s=>s.pts.map(p=>p.x)))].sort();const ys=series.flatMap(s=>s.pts.map(p=>p.y)).concat(o.ref!=null?[o.ref]:[]);
   const ticks=nice(Math.min(...ys),Math.max(...ys)),lo=ticks[0],hi=ticks[ticks.length-1];

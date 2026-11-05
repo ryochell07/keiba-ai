@@ -140,3 +140,27 @@ def test_確定済みの月は再取得しない(con, tmp_path):
     p.fetch_month(con, 2025, 12)
     assert len(calls) == 1
     assert "type=monthly&k_year=2025&k_month=12" in calls[0]
+
+
+def test_コーナー通過順の解析():
+    from keiba_ai.providers.nar_csv import parse_corner_order
+    assert parse_corner_order("1,3,13") == {1: 1, 3: 2, 13: 3}
+    assert parse_corner_order("1,3,(2,7),11-4,５") == {1: 1, 3: 2, 2: 3, 7: 3, 11: 5, 4: 6, 5: 7}
+    assert parse_corner_order("") == {}
+
+
+def test_通過順が馬ごとに入る(con, tmp_path):
+    row = race_row()
+    row[RACE_HEAD.index("コーナー通過順1")] = "2,(1,3),4"
+    row[RACE_HEAD.index("コーナー通過順4")] = "1,2,3,4"
+    import_zip(con, make_zip(tmp_path / "f.zip", racelist=csv_text(RACE_HEAD, [row])))
+    got = dict(con.execute("SELECT umaban,corners FROM result"))
+    assert got == {1: "2,1", 2: "1,2", 3: "2,3", 4: "4,4"}
+
+
+def test_再取込でも結果が重複しない(con, tmp_path):
+    z = make_zip(tmp_path / "g.zip")
+    import_zip(con, z)
+    n = con.execute("SELECT COUNT(*) FROM result").fetchone()[0]
+    import_zip(con, z, force=True)
+    assert con.execute("SELECT COUNT(*) FROM result").fetchone()[0] == n

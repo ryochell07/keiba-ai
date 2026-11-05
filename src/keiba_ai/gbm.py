@@ -13,8 +13,9 @@ from scipy.special import logsumexp
 
 from .features import FeatureSpec, mask_late_info
 
-PARAMS = dict(learning_rate=0.03, num_leaves=31, min_data_in_leaf=60, feature_fraction=0.7, bagging_fraction=0.8,
-              bagging_freq=1, lambda_l2=5.0, verbosity=-1, num_threads=0)
+# 調整期間 (2025-03〜08) の Optuna で選択。封鎖テストは使っていない
+PARAMS = dict(learning_rate=0.0312, num_leaves=58, min_data_in_leaf=364, feature_fraction=0.592, bagging_fraction=0.856,
+              bagging_freq=1, lambda_l2=2.68, verbosity=-1, num_threads=0)
 TOP_K_WEIGHTS = (1.0, 0.7, 0.5)
 
 
@@ -127,7 +128,7 @@ def trainable(frame: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, p
 
 
 def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds: int = 3, rounds: int = 800,
-                     valid_share: float = 0.15, progress=None) -> RaceModel:
+                     valid_share: float = 0.15, groups=None, params: dict | None = None, offset: np.ndarray | None = None) -> RaceModel:
     """時系列の末尾を検証に使い、早期終了と温度を決める。ランダム分割はしない。"""
     frame, feats = trainable(frame, feats)
     frame = frame.copy()
@@ -138,7 +139,7 @@ def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds
     n_valid = max(30, int(len(races) * valid_share))
     valid_ids = set(races[-n_valid:])
     is_valid = frame["race_id"].isin(valid_ids).to_numpy()
-    spec = FeatureSpec.fit(feats[~is_valid])
+    spec = FeatureSpec.fit(feats[~is_valid], groups=groups)
     model = RaceModel(org=org, spec=spec, train_start=frame["race_date"].min(), train_end=frame["race_date"].max())
     tr_f, va_f = frame[~is_valid].reset_index(drop=True), frame[is_valid].reset_index(drop=True)
     Xv = spec.transform(feats[is_valid].reset_index(drop=True))
@@ -156,7 +157,7 @@ def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds
         def metric(preds, _ds):
             return "pl_nll", pl_nll(preds, va_idx, va_mask, va_ord), False
 
-        booster = lgb.train({**PARAMS, "objective": obj, "seed": seed + 1}, dtrain, rounds, valid_sets=[dvalid],
+        booster = lgb.train({**PARAMS, **(params or {}), "objective": obj, "seed": seed + 1}, dtrain, rounds, valid_sets=[dvalid],
                             feval=metric, callbacks=[lgb.early_stopping(60, verbose=False)])
         best_rounds.append(booster.best_iteration)
         booster = _trim(booster)

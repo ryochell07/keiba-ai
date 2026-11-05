@@ -127,3 +127,12 @@ CREATE TABLE IF NOT EXISTS source_status (
   source TEXT PRIMARY KEY, enabled INTEGER, automated_fetch INTEGER,
   license_status TEXT, license_note TEXT, permission TEXT, last_success_at TEXT, last_error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS experiment (    -- 実験記録
+  experiment_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, stage TEXT NOT NULL, name TEXT NOT NULL, org TEXT NOT NULL,
+  train_period TEXT, eval_period TEXT, features TEXT, algo TEXT, params TEXT, calibration TEXT,
+  n_races INTEGER, log_loss REAL, brier REAL, top1_hit REAL, roi REAL, n_bets INTEGER, max_drawdown REAL,
+  roi_ci_low REAL, roi_ci_high REAL, delta_log_loss REAL, delta_ci_low REAL, delta_ci_high REAL,
+  decision TEXT, model_version TEXT, used_locked_test INTEGER NOT NULL DEFAULT 0, seconds REAL
+);
+CREATE INDEX IF NOT EXISTS idx_experiment_stage ON experiment(stage);

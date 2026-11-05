@@ -16,7 +16,11 @@ import numpy as np
 import pandas as pd
 
 CATEGORICAL = ["course_code", "surface", "going", "weather", "direction", "sex", "weight_rule", "race_kind",
-               "grade", "category"]
+               "grade", "category", "x_course_dist", "x_cond_age"]
+# 追加特徴量のグループ。採否は実験 (keiba lab groups) の結果で決める
+GROUPS = {"speed": "x_speed_", "apt": "x_apt_", "opp": "x_opp_", "pace": "x_pace_", "jk": "x_jk_",
+          "course": "x_course_", "day": "x_day_", "cond": "x_cond_", "pastmkt": "x_pastmkt_"}
+ADOPTED_GROUPS: tuple[str, ...] = ("speed", "apt", "opp", "jk")  # 2026-11-06 の封鎖テストで採用
 NUMERIC_RACE = ["distance", "dist_bucket", "n_runners", "race_no", "month", "waku", "umaban", "umaban_ratio",
                 "class_ord", "age", "carried_weight", "body_weight", "body_weight_diff", "weight_ratio"]
 # 発走直前まで確定しない項目。朝の予測では欠損になるので、学習時に一定割合を欠損にして慣らす。
@@ -33,7 +37,7 @@ def load_frame(con: sqlite3.Connection, org: str, until: str | None = None) -> p
     sql = """
     SELECT e.race_id, e.umaban, e.waku, e.horse_id, e.sex, e.age, e.carried_weight, e.jockey_id, e.trainer_id,
            e.body_weight, e.body_weight_diff,
-           r.org, r.course_code, r.race_date, r.race_no, r.post_time, r.name AS race_name, r.grade, r.race_kind, r.category, r.class_name,
+           r.org, r.course_code, r.race_date, r.race_no, r.post_time, r.name AS race_name, r.conditions, r.grade, r.race_kind, r.category, r.class_name,
            r.weight_rule, r.surface, r.distance, r.direction, r.weather, r.going, r.n_runners,
            h.sire,
            x.finish_pos, x.status, x.time_sec, x.margin, x.last3f, x.corners, x.popularity_final
@@ -138,6 +142,127 @@ def add_market(df: pd.DataFrame, con: sqlite3.Connection, cutoff_min: int = 10) 
     return out
 
 
+def _smooth(rate: pd.Series, n: pd.Series, prior: float, k: float = 20.0) -> pd.Series:
+    """件数の少ない組み合わせを全体平均へ縮める。"""
+    return (rate.fillna(prior) * n.fillna(0) + prior * k) / (n.fillna(0) + k)
+
+
+def _window_rate(d: pd.DataFrame, key: str, val: str, days: int, prior: float) -> pd.Series:
+    """前日までの直近 days 日の平滑化率。当日分は含まない。"""
+    sub = d.loc[d[key].notna() & d[val].notna(), [key, "date", val]]
+    daily = sub.groupby([key, "date"], sort=True)[val].agg(["sum", "count"]).reset_index()
+    if daily.empty:
+        return pd.Series(np.nan, index=d.index)
+    rolled = (daily.set_index("date").groupby(key)[["sum", "count"]]
+              .rolling(f"{days}D", closed="left").sum().reset_index())
+    merged = d[[key, "date"]].merge(rolled, how="left", on=[key, "date"])
+    merged.index = d.index
+    return (merged["sum"].fillna(0) + prior * 20) / (merged["count"].fillna(0) + 20)
+
+
+def _extra_features(d: pd.DataFrame, feats: pd.DataFrame) -> pd.DataFrame:
+    """追加特徴量。当該レースの結果は shift か前日までの集計を通してだけ使う。"""
+    x: dict[str, pd.Series] = {}
+    by_horse = d["horse_id"]
+    roll = lambda s, w: s.groupby(by_horse, sort=False).rolling(w, min_periods=1).mean().droplevel(0)
+    # --- 条件補正スピード指数: 同じ競馬場・馬場種別・距離・馬場の前日までの平均と、当日の時計の出方を除く ---
+    b1 = asof_stats(d, ["course_code", "surface", "distance", "going"], ["h_speed"], "b1")
+    b0 = asof_stats(d, ["course_code", "surface", "distance"], ["h_speed"], "b0", count=False)
+    base = b1["b1_h_speed_rate"].where(b1["b1_n"] >= 20, b0["b0_h_speed_rate"])
+    resid = d["h_speed"] - base
+    day_bias = resid.groupby([d["race_date"], d["course_code"], d["surface"]], dropna=False).transform("mean")
+    d["h_fig"] = resid - day_bias
+    shifted = d.groupby("horse_id", sort=False)["h_fig"].shift(1)
+    for w in WINDOWS:
+        x[f"x_speed_m{w}"] = roll(shifted, w)
+    x["x_speed_best5"] = shifted.groupby(by_horse, sort=False).rolling(5, min_periods=1).min().droplevel(0)
+    x["x_speed_last"] = shifted
+    x["x_speed_trend"] = x["x_speed_m3"] - x["x_speed_m10"]
+    x["x_speed_behind_km_m5"] = roll((d["h_behind"] / d["distance"] * 1000).groupby(by_horse, sort=False).shift(1), 5)
+    grp = x["x_speed_m5"].groupby(d["race_id"])
+    x["x_speed_rel"] = (x["x_speed_m5"] - grp.transform("mean")) / grp.transform("std").replace(0, np.nan)
+    x["x_speed_rank"] = grp.rank(pct=True)
+    # --- 条件別の能力 -------------------------------------------------------------
+    for keys, name in ((["horse_id", "surface"], "surface"), (["horse_id", "dist_bucket"], "dist"),
+                       (["horse_id", "course_code"], "course"), (["horse_id", "going"], "going")):
+        a = asof_stats(d, keys, ["h_fig"], f"x_apt_{name}")
+        x[f"x_apt_{name}_fig"] = a[f"x_apt_{name}_h_fig_rate"]
+    long_rest = feats["rest_days"].ge(90)
+    d["h_long_rest"] = long_rest.astype(float)
+    a = asof_stats(d, ["horse_id", "h_long_rest"], ["h_top3"], "x_apt_rest")
+    x["x_apt_rest_top3"] = _smooth(a["x_apt_rest_h_top3_rate"], a["x_apt_rest_n"], 0.3, 5)
+    x["x_apt_long_rest"] = d["h_long_rest"].where(feats["rest_days"].notna())
+    # --- 相手関係: 過去に戦ったレースの相手の強さ -----------------------------------
+    field = x["x_speed_m5"].groupby(d["race_id"]).transform("mean")
+    d["h_field"] = field
+    past_field = d.groupby("horse_id", sort=False)["h_field"].shift(1)
+    x["x_opp_field_m5"] = roll(past_field, 5)
+    x["x_opp_now"] = field
+    x["x_opp_self_vs_now"] = field - x["x_speed_m5"]
+    # --- 展開: 過去走の通過順から想定する ---------------------------------------------
+    style = feats["corner_first_m5"]
+    bands = {"front": style.lt(0.2), "stalk": style.ge(0.2) & style.lt(0.45), "mid": style.ge(0.45) & style.lt(0.75), "close": style.ge(0.75)}
+    for name, m in bands.items():
+        x[f"x_pace_n_{name}"] = m.astype(float).groupby(d["race_id"]).transform("sum")
+    x["x_pace_pressure"] = x["x_pace_n_front"] / d["n_runners"]
+    x["x_pace_style_pressure"] = style * x["x_pace_pressure"]
+    x["x_pace_style_draw"] = style * d["umaban_ratio"]
+    # --- 騎手・調教師: 期間別と平滑化した組み合わせ ------------------------------------
+    for days in (30, 90, 365):
+        x[f"x_jk_win_{days}"] = _window_rate(d, "jockey_id", "h_win", days, 0.1)
+        x[f"x_jk_top3_{days}"] = _window_rate(d, "jockey_id", "h_top3", days, 0.3)
+        x[f"x_jk_tr_win_{days}"] = _window_rate(d, "trainer_id", "h_win", days, 0.1)
+    for keys, name in ((["jockey_id", "horse_id"], "horse"), (["jockey_id", "trainer_id"], "trainer"),
+                       (["jockey_id", "surface"], "surface"), (["jockey_id", "going"], "going"), (["trainer_id", "surface"], "tr_surface")):
+        a = asof_stats(d, keys, ["h_win", "h_top3"], f"j{name}")
+        x[f"x_jk_{name}_win"] = _smooth(a[f"j{name}_h_win_rate"], a[f"j{name}_n"], 0.1)
+        x[f"x_jk_{name}_top3"] = _smooth(a[f"j{name}_h_top3_rate"], a[f"j{name}_n"], 0.3)
+    prev_rate = x["x_jk_win_365"].groupby(by_horse, sort=False).shift(1)
+    x["x_jk_upgrade"] = x["x_jk_win_365"] - prev_rate
+    # --- コース傾向: 枠と脚質の有利不利 -----------------------------------------------
+    d["h_draw"] = np.select([d["umaban_ratio"].le(1 / 3), d["umaban_ratio"].le(2 / 3)], [0, 1], 2)
+    d["h_style"] = np.select([style.lt(0.2), style.lt(0.45), style.lt(0.75), style.ge(0.75)], [0, 1, 2, 3], np.nan)
+    x["x_course_dist"] = d["course_code"].astype(str) + d["surface"].fillna("") + d["distance"].astype("Int64").astype(str)
+    for keys, name in ((["course_code", "surface", "dist_bucket", "h_draw"], "draw"), (["course_code", "surface", "dist_bucket", "h_style"], "style"),
+                       (["course_code", "going", "h_style"], "going_style")):
+        a = asof_stats(d, keys, ["h_win"], f"c{name}")
+        x[f"x_course_{name}_win"] = _smooth(a[f"c{name}_h_win_rate"], a[f"c{name}_n"], 0.1, 50)
+    # --- 当日の傾向: 同じ日・同じ競馬場の、番号が前のレースだけを使う ------------------------
+    winners = d.loc[pd.to_numeric(d["finish_pos"], errors="coerce").eq(1), ["race_id", "h_corner_first", "umaban_ratio"]].drop_duplicates("race_id")
+    races = d[["race_id", "race_date", "course_code", "race_no"]].drop_duplicates("race_id").merge(winners, how="left", on="race_id").sort_values(["race_date", "course_code", "race_no"])
+    g = races.groupby(["race_date", "course_code"], sort=False)
+    races["x_day_win_corner"] = g["h_corner_first"].transform(lambda v: v.shift(1).expanding().mean())
+    races["x_day_win_draw"] = g["umaban_ratio"].transform(lambda v: v.shift(1).expanding().mean())
+    races["x_day_n"] = g["h_corner_first"].transform(lambda v: v.shift(1).notna().cumsum()).astype(float)
+    merged = d[["race_id"]].merge(races[["race_id", "x_day_win_corner", "x_day_win_draw", "x_day_n"]], how="left", on="race_id")
+    merged.index = d.index
+    for c in ("x_day_win_corner", "x_day_win_draw", "x_day_n"):
+        x[c] = merged[c]
+    x["x_day_style_gap"] = style - x["x_day_win_corner"]
+    x["x_day_draw_gap"] = d["umaban_ratio"] - x["x_day_win_draw"]
+    # --- 過去走の人気: そのレースより前に市場がどう評価していたか (当該レースの人気は使わない) ------
+    past_pop = pd.to_numeric(d["popularity_final"], errors="coerce") / d["n_runners"]
+    shifted_pop = past_pop.groupby(by_horse, sort=False).shift(1)
+    x["x_pastmkt_pop_last"] = shifted_pop
+    for w in (3, 5):
+        x[f"x_pastmkt_pop_m{w}"] = roll(shifted_pop, w)
+    surprise = (past_pop - d["h_fin_ratio"]).groupby(by_horse, sort=False).shift(1)
+    x["x_pastmkt_beat_m3"] = roll(surprise, 3)
+    x["x_pastmkt_beat_m5"] = roll(surprise, 5)
+    grp = x["x_pastmkt_pop_m3"].groupby(d["race_id"])
+    x["x_pastmkt_rel"] = (x["x_pastmkt_pop_m3"] - grp.transform("mean")) / grp.transform("std").replace(0, np.nan)
+    x["x_pastmkt_rank"] = grp.rank(pct=True)
+    d["h_pop_ratio"] = past_pop
+    a = asof_stats(d, ["jockey_id"], ["h_pop_ratio"], "x_pastmkt_jk")
+    x["x_pastmkt_jk_pop"] = a["x_pastmkt_jk_h_pop_ratio_rate"]
+    # --- 競走条件 --------------------------------------------------------------------
+    text = (d["conditions"].fillna("") if "conditions" in d else pd.Series("", index=d.index)).map(lambda v: unicodedata.normalize("NFKC", v))
+    cat = d["category"].fillna("") if "category" in d else pd.Series("", index=d.index)
+    x["x_cond_age"] = (text + " " + cat).str.extract(r"(\d歳以上|\d歳)", expand=False)
+    x["x_cond_rank_in_class"] = feats["career_top3"] * d["class_ord"]
+    return pd.DataFrame(x, index=d.index)
+
+
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     """load_frame の結果 (将来レースを含んでよい) から特徴量を作る。行順は入力と同じ。"""
     d = df.copy()
@@ -210,9 +335,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feats["style_vs_field"] = feats["corner_first_m5"] - feats["pace_corner_mean"]
 
     extra = {c: pd.to_numeric(d[c], errors="coerce").astype(float) for c in NUMERIC_RACE}
-    extra.update({c: d[c] for c in CATEGORICAL})
+    extra.update({c: d[c] for c in CATEGORICAL if not c.startswith("x_")})
     extra.update({c: d[c] if c in d else pd.Series(np.nan, index=d.index) for c in MARKET})
     feats = pd.concat([feats.copy(), pd.DataFrame(extra, index=d.index)], axis=1)
+    feats = pd.concat([feats, _extra_features(d, feats)], axis=1)
     assert_no_forbidden(feats.columns)
     return feats
 
@@ -230,8 +356,10 @@ class FeatureSpec:
     vocab: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
-    def fit(cls, feats: pd.DataFrame, min_market_coverage: float = 0.5) -> "FeatureSpec":
-        cols = list(feats.columns)
+    def fit(cls, feats: pd.DataFrame, min_market_coverage: float = 0.5, groups=None) -> "FeatureSpec":
+        groups = ADOPTED_GROUPS if groups is None else groups
+        allowed = tuple(GROUPS[g] for g in groups)
+        cols = [c for c in feats.columns if not c.startswith("x_") or c.startswith(allowed)]
         if feats["market_win_odds"].notna().mean() < min_market_coverage:
             cols = [c for c in cols if c not in MARKET]
         cols = [c for c in cols if c in CATEGORICAL or feats[c].notna().any()]

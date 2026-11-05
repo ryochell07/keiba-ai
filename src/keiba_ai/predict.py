@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 KEEP_TOP = {"win": 18, "place": 18, "bracket_quinella": 36, "bracket_exacta": 40, "quinella": 40, "wide": 40, "exacta": 40,
             "trio": 120, "trifecta": 200}
 CANDIDATE_K = 10  # バックテストの candidate_coverage で検証する (地方の実データで1-3着を97%含む)
-DEFAULT_BLEND = (0.1, 0.95)  # 係数の推定前に使う初期値。地方の実データの推定値に近い
+DEFAULT_BLEND = (0.22, 0.86)  # 係数の推定前に使う初期値。地方の封鎖テスト前半の推定値
 
 
 def load_blend(org: str) -> tuple[float, float] | None:

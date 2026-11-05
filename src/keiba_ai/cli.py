@@ -63,6 +63,7 @@ def main(argv=None) -> int:
     p.add_argument("--to", dest="end", required=True, help="YYYY-MM")
     p.add_argument("--odds-from", default="2026-03", help="オッズを取得する開始月")
     p.add_argument("--full-odds-from", help="全券種のオッズを保存する開始月")
+    p.add_argument("--refresh", action="store_true", help="取り込み処理の修正を反映するため再取得 (同じ月は1日1回まで)")
     sub.add_parser("nar-update", help="前月・当月の月次ZIPを更新 (1日1回まで)")
     sub.add_parser("nar-today", help="当日ZIPで出馬表と発売中オッズを更新")
     sub.add_parser("status", help="DB件数と取得元の状態を表示")
@@ -104,7 +105,7 @@ def main(argv=None) -> int:
         elif args.cmd in ("nar-backfill", "nar-update", "nar-today"):
             prov = _nar(con, sources)
             if args.cmd == "nar-backfill":
-                out = prov.backfill(con, args.start, args.end, args.odds_from, args.full_odds_from)
+                out = prov.backfill(con, args.start, args.end, args.odds_from, args.full_odds_from, args.refresh)
                 print(json.dumps([{k: v for k, v in x.items() if k != "warnings"} for x in out], ensure_ascii=False))
             elif args.cmd == "nar-update":
                 print(prov.update(con))
