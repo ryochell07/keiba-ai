@@ -122,7 +122,7 @@ function start(){
   $('#tabs').innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}">${l}</button>`).join('');
   $('#org').innerHTML=[['all','すべて'],['JRA','中央'],['NAR','地方']].map(([v,l])=>`<button data-org="${v}">${l}</button>`).join('');
   const dates=[...new Set(D.races.map(r=>r.date))].sort();
-  S.date=dates.includes(D.today)?D.today:(dates[0]||null);
+  const next=D.races.filter(r=>r.date>=D.today&&!started(r)).map(r=>r.date).sort()[0];S.date=next||(dates.includes(D.today)?D.today:(dates[0]||null));
   S.aorg=Object.keys(D.backtests)[0]||null;
   window.addEventListener('hashchange',route);route();
 }
@@ -163,7 +163,7 @@ home(){const rs=raceList();const all=inScope();const top=upcoming(all).filter(p=
   return dateChips()+`<h2>${heading}</h2>`+(rs.length?`<div class="grid">${Object.values(byCourse).map(c=>`<div class="tile"><div class="v">${esc(c.course)}</div><div class="l">${c.org==='JRA'?'中央':'地方'} ${c.n}レース</div></div>`).join('')}</div>`:`<div class="empty">この条件の開催はありません。</div>`)
   +`<p class="meta">予測更新 ${at?at.slice(5,16).replace('T',' ').replace('-','/'):'-'} ・ モデル ${model} ・ 取得エラー(7日) ${errs}件</p>`
   +`<h2>期待値上位</h2>`+(top.length?CAUTION+`<div class="list2">${top.map(p=>comboCard(p)).join('')}</div>`:`<div class="empty">オッズ未取得のため期待値はまだ計算できません。下のAI注目レースを確認できます。</div>`)
-  +`<h2>注目レース</h2><div class="list2">${notable.map(x=>raceCard(x.r)).join('')||'<div class="empty">予測はまだありません。</div>'}</div>`},
+  +`<h2>注目レース</h2><div class="list2">${notable.map(x=>raceCard(x.r)).join('')||'<div class="empty">これから発走する予測済みのレースはありません。</div>'}</div>`},
 races(){if(S.race)return raceDetail(R[S.race]);const rs=raceList();const by={};rs.forEach(r=>(by[r.course]=by[r.course]||[]).push(r));
   return dateChips()+(Object.entries(by).map(([c,l])=>`<h2>${esc(c)} ${l.length}R</h2><div class="list2">${l.map(raceCard).join('')}</div>`).join('')||'<div class="empty">公開中のレースはありません。</div>')},
 rank(){const kinds=[['ev','期待値'],['bet','券種別'],['race','レース別'],['prob','AI確率'],['gap','人気との乖離']];

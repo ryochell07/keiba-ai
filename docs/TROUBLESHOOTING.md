@@ -10,6 +10,7 @@
 | `HTTP 403` / `429` で停止 | 取得元が拒否。ActionsのIPが制限された可能性 | **回避しない。** 頻度を下げて様子を見る。続く場合はローカル実行に切り替え、`state pack` で同期 |
 | `race_header が見つかりません` | JRAのページ構造変更 | `providers/jra_parser.py` を修正。`data/raw/` の保存ページで再解析できる |
 | `カラムなし […]` | 地方CSVの仕様変更 | [説明書](https://www.keiba.go.jp/pdf/manual/data_pdf_manual.pdf) を確認し `config/nar_columns.yaml` を修正 |
+| `レース数が読み込み時の…より減っている` | 復元の失敗 | 上書きを止める安全装置です。ログを確認して `daily` を再実行 |
 | `状態ファイルを取得できません` | GitHubの一時障害 | 再実行。上書きはされません |
 | `状態ファイルが…上限` | データが1500MB超 | 古い三連単オッズの削除などを検討。**削除は不可逆なので事前にバックアップ** |
 | DBが壊れた / 誤った内容で上書きした | 実行中断など | Releaseの `keiba-state-w0〜3.enc` を `keiba-state.enc` として取り込み、`state unpack` |
