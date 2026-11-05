@@ -71,6 +71,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config.ensure_dirs()
+    if args.cmd == "state":  # 復元先の DB を開いてはいけない (WAL が残って復元した DB を壊す)
+        return args.func(args, None, None) or 0
     con = connect()
     sources = config.load_sources()
     _sync_sources(con, sources)

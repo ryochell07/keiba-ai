@@ -31,7 +31,23 @@ def _models_to_keep() -> list[Path]:
     return [config.ROOT / p for p in keep if (config.ROOT / p).exists()]
 
 
+def _race_count(db: Path) -> int:
+    con = sqlite3.connect(db)
+    try:
+        return con.execute("SELECT COUNT(*) FROM race").fetchone()[0]
+    finally:
+        con.close()
+
+
+def _refuse_if_shrunk() -> None:
+    """読み込んだ時よりレースが減っていたら、復元の失敗とみなして保存しない。"""
+    mark = config.DATA / ".state_races"
+    if mark.exists() and _race_count(config.DB_PATH) < int(mark.read_text()):
+        raise SystemExit(f"レース数が読み込み時の {mark.read_text()} より減っているため、上書きを中止しました")
+
+
 def pack(path: str) -> str:
+    _refuse_if_shrunk()
     snap = config.DB_PATH.with_suffix(".snapshot")
     src = sqlite3.connect(config.DB_PATH)
     dst = sqlite3.connect(snap)
@@ -68,9 +84,15 @@ def unpack(path: str) -> str:
     config.ensure_dirs()
     with tarfile.open(fileobj=io.BytesIO(plain), mode="r:gz") as t:
         t.extractall(config.DATA / "_state", filter="data")
-    (config.DATA / "_state" / "keiba.db").replace(config.DB_PATH)
+    restored = config.DATA / "_state" / "keiba.db"
+    count = _race_count(restored)
+    # 前の DB の WAL が残ると、復元した DB に適用されて中身が壊れる
+    for suffix in ("-wal", "-shm"):
+        Path(f"{config.DB_PATH}{suffix}").unlink(missing_ok=True)
+    restored.replace(config.DB_PATH)
+    (config.DATA / ".state_races").write_text(str(count))
     for m in (config.DATA / "_state" / "models").glob("*.pkl"):
         m.replace(config.MODELS / m.name)
     for r in (config.DATA / "_state" / "reports").glob("*.json"):
         r.replace(config.REPORTS / r.name)
-    return f"unpacked {path}"
+    return f"unpacked {path}: {count} races"

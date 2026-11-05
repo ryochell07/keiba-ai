@@ -18,4 +18,5 @@ runs:
           sleep $((i * 30))
         done
         .venv/bin/keiba state unpack data/keiba-state.enc
+        .venv/bin/keiba status
         touch data/.state_ok
