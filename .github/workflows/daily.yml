@@ -1,0 +1,52 @@
+name: daily
+# 毎朝の結果取り込み・照合・予測・ページ更新。毎月第1月曜に再学習 (旧モデルより悪ければ採用しない)。
+on:
+  schedule:
+    - cron: "0 21 * * *"       # 06:00 JST
+  workflow_dispatch:
+    inputs:
+      retrain: {description: "再学習する", type: boolean, default: false}
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency: {group: keiba-state, cancel-in-progress: false}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
+      KEIBA_SITE_PASSPHRASE: ${{ secrets.KEIBA_SITE_PASSPHRASE }}
+      ALLOW_PRIVATE_RUN: ${{ vars.ALLOW_PRIVATE_RUN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/guard
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/pull-state
+      - name: 日次処理
+        env:
+          RETRAIN: ${{ inputs.retrain }}
+        run: |
+          ARGS=""
+          dow="$(TZ=Asia/Tokyo date +%u)"; dom="$(TZ=Asia/Tokyo date +%-d)"
+          if [ "$RETRAIN" = "true" ] || { [ "$dow" = "1" ] && [ "$dom" -le 7 ]; }; then ARGS="--retrain"; fi
+          .venv/bin/keiba daily $ARGS
+      - uses: ./.github/actions/push-state
+        if: success() || failure()
+      - uses: actions/upload-pages-artifact@v3
+        if: success() || failure()
+        with: {path: public}
+      - uses: actions/deploy-pages@v4
+        if: success() || failure()
+      - name: スケジュール維持の記録
+        # 公開リポジトリは無活動が60日続くと定期実行が止まるので、毎月1日に時刻だけコミットする
+        if: success()
+        run: |
+          [ "$(TZ=Asia/Tokyo date +%-d)" = "1" ] || exit 0
+          TZ=Asia/Tokyo date +%F > docs/heartbeat.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/heartbeat.txt
+          git commit -m "chore: monthly heartbeat" && git push || true

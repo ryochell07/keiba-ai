@@ -1,0 +1,42 @@
+name: raceday
+# 発売中オッズを取得時刻付きで蓄積し、期待値を更新する。地方は毎日、中央は土日月 (祝日開催を含む)。
+on:
+  schedule:
+    - cron: "*/30 0-12 * * *"    # 毎日 09:00-21:30 JST
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency: {group: keiba-state, cancel-in-progress: false}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
+      KEIBA_SITE_PASSPHRASE: ${{ secrets.KEIBA_SITE_PASSPHRASE }}
+      ALLOW_PRIVATE_RUN: ${{ vars.ALLOW_PRIVATE_RUN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/guard
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/pull-state
+      - name: 出馬表とオッズの取得、予測更新
+        run: |
+          case "$(TZ=Asia/Tokyo date +%u)" in
+            1|6|7)
+              .venv/bin/keiba jra-cards || echo "::warning::中央の出馬表の取得に失敗"
+              .venv/bin/keiba jra-odds || echo "::warning::中央のオッズの取得に失敗"
+              ;;
+          esac
+          .venv/bin/keiba nar-today || echo "::warning::地方の当日データの取得に失敗"
+          .venv/bin/keiba daily --no-fetch
+      - uses: ./.github/actions/push-state
+        if: success() || failure()
+      - uses: actions/upload-pages-artifact@v3
+        if: success() || failure()
+        with: {path: public}
+      - uses: actions/deploy-pages@v4
+        if: success() || failure()

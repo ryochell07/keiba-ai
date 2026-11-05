@@ -1,0 +1,88 @@
+# 地方競馬 公式CSV のカラム定義 (データダウンロード機能説明書 2026/9/16版より)。
+# 仕様変更時はここだけ直せばよい。値の内部名: CSV のヘッダ名の候補リスト
+racelist:
+  course: [競馬場]
+  date: [競走年月日]
+  race_no: [レース番号]
+  post_time: [発走時刻]
+  race_kind: [競走種類名称]
+  name: [レース名]
+  surface: [芝ダート区分]
+  direction: [回り]
+  distance: [距離]
+  weather: [天候]
+  going: [馬場]
+  n_runners: [頭数]
+  conditions: [条件]
+horselist:
+  course: [競馬場]
+  date: [競走年月日]
+  race_no: [レース番号]
+  waku: [枠番]
+  umaban: [馬番]
+  horse_name: [馬名]
+  sex: [性]
+  age: [齢]
+  coat: [毛色]
+  birth_date: [生年月日]
+  sire: [父馬名]
+  dam: [母馬名]
+  damsire: [母父馬名]
+  jockey: [騎手名]
+  jockey_aff: [騎手所属]
+  carried_weight: [負担重量]
+  trainer: [調教師]
+  trainer_aff: [調教師所属]
+  owner: [馬主氏名]
+  breeder: [生産牧場名]
+  body_weight: [馬体重]
+  body_weight_diff: [馬体重増減]
+  finish: [着順]
+  time: [タイム]
+  margin: [着差]
+  last3f: [上がり3F]
+  popularity: [人気]
+odds:
+  course: [競馬場]
+  date: [競走年月日]
+  race_no: [レース番号]
+  bet_type: [賭式]
+  n1: [番号1]
+  n2: [番号2]
+  n3: [番号3]
+  odds: [オッズ]
+  odds_max: ["オッズ（最大）"]
+  popularity: [人気]
+bet_types:
+  単勝: win
+  複勝: place
+  枠複: bracket_quinella
+  枠連: bracket_quinella
+  枠単: bracket_exacta
+  馬複: quinella
+  馬連: quinella
+  馬単: exacta
+  ワイド: wide
+  ３連複: trio
+  3連複: trio
+  ３連単: trifecta
+  3連単: trifecta
+# 払戻金ファイルは 券種 + 組番列 + 金額列 + 人気列 の並び。
+payback:
+  course: [競馬場]
+  date: [競走年月日]
+  race_no: [レース番号]
+  groups:
+    - {bet: win, nums: [単勝組番], amount: "単勝払戻金（円）", pop: 単勝人気}
+    - {bet: place, nums: [複勝組番1], amount: "複勝払戻金1（円）", pop: 複勝人気1}
+    - {bet: place, nums: [複勝組番2], amount: "複勝払戻金2（円）", pop: 複勝人気2}
+    - {bet: place, nums: [複勝組番3], amount: "複勝払戻金3（円）", pop: 複勝人気3}
+    - {bet: bracket_quinella, nums: [枠複組番1, 枠複組番2], amount: "枠複払戻金（円）", pop: 枠複人気}
+    - {bet: bracket_exacta, nums: [枠単組番1, 枠単組番2], amount: "枠単払戻金（円）", pop: 枠単人気}
+    - {bet: quinella, nums: [馬複組番1, 馬複組番2], amount: "馬複払戻金（円）", pop: 馬複人気１}
+    - {bet: exacta, nums: [馬単組番1, 馬単組番2], amount: "馬単払戻金（円）", pop: 馬単人気１}
+    - {bet: wide, nums: [ワイド組番1馬番1, ワイド組番1馬番2], amount: "ワイド払戻金1（円）", pop: ワイド人気1}
+    - {bet: wide, nums: [ワイド組番2馬番1, ワイド組番2馬番2], amount: "ワイド払戻金2（円）", pop: ワイド人気2}
+    - {bet: wide, nums: [ワイド組番3馬番1, ワイド組番3馬番2], amount: "ワイド払戻金3（円）", pop: ワイド人気3}
+    - {bet: trio, nums: [３連複組番馬番1, ３連複組番馬番2, ３連複組番馬番3], amount: "３連複払戻金（円）", pop: ３連複人気}
+    - {bet: trifecta, nums: [３連単組番馬番1, ３連単組番馬番2, ３連単組番馬番3], amount: "３連単払戻金（円）", pop: ３連単人気}

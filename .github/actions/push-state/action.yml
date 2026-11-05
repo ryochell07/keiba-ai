@@ -1,0 +1,22 @@
+name: push-state
+description: DB とモデルを暗号化してリリースへ保存する。週ごとの世代も残す
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if [ ! -f data/.state_ok ] || [ ! -f data/keiba.db ]; then
+          echo "::warning::状態を読み込めていないので保存しません"
+          exit 0
+        fi
+        .venv/bin/keiba state pack data/keiba-state.enc
+        gh release view state >/dev/null 2>&1 || gh release create state --title "encrypted state" --notes "暗号化された作業データ。鍵なしでは読めません。" --latest=false
+        for i in 1 2 3; do
+          gh release upload state data/keiba-state.enc --clobber && break
+          [ "$i" = 3 ] && { echo "::error::状態ファイルを保存できません"; exit 1; }
+          sleep $((i * 30))
+        done
+        # 復旧用に4世代を週単位で持つ
+        gen="keiba-state-w$(( $(date +%-V) % 4 )).enc"
+        cp data/keiba-state.enc "data/$gen"
+        gh release upload state "data/$gen" --clobber || echo "::warning::世代バックアップに失敗"

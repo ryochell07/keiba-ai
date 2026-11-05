@@ -1,0 +1,19 @@
+# データ・認証情報は絶対にコミットしない (権利上公開不可 / 秘密情報)
+data/
+public/
+reports/
+models/
+.env
+.env.*
+*.db
+*.db-*
+*.enc
+*.zip
+*.csv
+*.lgb
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+.claude/

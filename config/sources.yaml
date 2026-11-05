@@ -1,0 +1,51 @@
+# 取得元ごとの有効/無効と利用条件・許諾状況。調査日: 2026-11-05
+# automated_fetch: true でも robots.txt で禁止された URL には HTTP クライアントが必ず拒否する。
+# robots を上書きできるのは、運営者からの書面許諾を permission に記録した場合のみ。
+sources:
+  jra:
+    enabled: true
+    name: JRA公式サイト
+    base_url: https://www.jra.go.jp
+    automated_fetch: true
+    min_interval_sec: 3.0
+    terms_url: https://www.jra.go.jp/use/
+    license_status: private_use_only
+    license_note: >
+      robots.txt は全パス許可(2026-11-05確認)。著作物は私的使用の範囲を超える利用に許諾が必要。
+      取得データの再配布・公開は不可。/sitepolicy/ は403で未確認のため定期的に再確認すること。
+    permission: {status: none, evidence: ""}
+  nar_csv:
+    enabled: true
+    name: 地方競馬情報サイト 公式CSV
+    base_url: https://www.keiba.go.jp
+    automated_fetch: true           # robots.txt は Disallow だが、下記 permission の許諾に基づき取得する
+    min_interval_sec: 10.0          # robots.txt の Crawl-delay
+    terms_url: https://www.keiba.go.jp/terms.html
+    manual_url: https://www.keiba.go.jp/pdf/manual/data_pdf_manual.pdf
+    license_status: private_use_only
+    license_note: >
+      2026-11-05 に利用者が地方競馬全国協会へ電話で問い合わせ、個人利用に限り自動取得可との回答を得た。
+      用途は個人利用に限定し、取得データの転載・再配布はしない。頻度は説明書FAQの目安
+      (月次は1日1回、当日は2分に1回)以下とする。書面ではないため、条件変更があれば従うこと。
+    permission:
+      status: granted
+      scope: personal_use_only
+      evidence: "2026-11-05 利用者が地方競馬全国協会へ電話で確認。個人利用に限り自動取得可との回答 (口頭)"
+  netkeiba:
+    enabled: false
+    name: netkeiba
+    automated_fetch: false
+    license_status: not_permitted
+    license_note: Bot対策強化の報告あり。アクセス制限回避は行わない方針のため対象外。
+    permission: {status: none, evidence: ""}
+  jra_van:
+    enabled: false
+    name: JRA-VAN Data Lab
+    automated_fetch: false
+    license_status: paid_not_contracted
+    license_note: 有料(月額2,090円)。無料条件に合わないため契約しない。
+    permission: {status: none, evidence: ""}
+
+limits:
+  max_requests_per_run: 6000        # 1回の実行で超えたら安全に停止
+  max_state_size_mb: 1500           # GitHub Release asset 上限(2GB)の手前で停止

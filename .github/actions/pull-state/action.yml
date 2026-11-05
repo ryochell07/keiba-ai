@@ -1,0 +1,21 @@
+name: pull-state
+description: 暗号化された DB とモデルをリリースから取得して復号する
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        mkdir -p data
+        if ! gh release view state >/dev/null 2>&1; then
+          # 初回だけここに来る。リリースがあるのに取得できない場合は下で失敗させ、空のDBで上書きしない
+          echo "状態ファイルなし: 新規 DB で開始します"
+          touch data/.state_ok
+          exit 0
+        fi
+        for i in 1 2 3; do
+          gh release download state -p keiba-state.enc -D data --clobber && break
+          [ "$i" = 3 ] && { echo "::error::状態ファイルを取得できません"; exit 1; }
+          sleep $((i * 30))
+        done
+        .venv/bin/keiba state unpack data/keiba-state.enc
+        touch data/.state_ok

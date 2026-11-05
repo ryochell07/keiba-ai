@@ -1,0 +1,12 @@
+name: guard
+description: 無料枠を超えないためのガード。公開リポジトリ以外では実行を止める
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        vis="$(gh repo view "$GITHUB_REPOSITORY" --json visibility -q .visibility)"
+        if [ "$vis" != "PUBLIC" ] && [ "${ALLOW_PRIVATE_RUN:-}" != "true" ]; then
+          echo "::error::公開リポジトリ以外では Actions の分数が有料枠に届く可能性があるため停止しました (docs/TROUBLESHOOTING.md)"
+          exit 1
+        fi

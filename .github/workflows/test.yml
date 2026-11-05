@@ -1,0 +1,13 @@
+name: test
+on:
+  push:
+    paths-ignore: ["docs/heartbeat.txt"]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: .venv/bin/python -m pytest -q

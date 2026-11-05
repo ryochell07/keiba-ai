@@ -1,0 +1,31 @@
+name: backfill
+# 過去データの取り込み。毎晩続きを進め、完了済みの月は飛ばす。1回の要求数は設定で上限あり。
+on:
+  schedule:
+    - cron: "0 13 * * *"   # 22:00 JST (朝の daily までに終わる)
+  workflow_dispatch:
+    inputs:
+      from: {description: "開始 YYYY-MM", required: true, default: "2024-01"}
+      to: {description: "終了 YYYY-MM", required: true, default: "2026-10"}
+      source: {description: "取得元", type: choice, options: [jra, nar], default: jra}
+permissions: {contents: write}
+concurrency: {group: keiba-state, cancel-in-progress: false}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
+      ALLOW_PRIVATE_RUN: ${{ vars.ALLOW_PRIVATE_RUN }}
+      FROM: ${{ inputs.from || '2024-01' }}
+      TO: ${{ inputs.to || '2026-10' }}
+      SOURCE: ${{ inputs.source || 'jra' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/guard
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/pull-state
+      - run: .venv/bin/keiba "$SOURCE-backfill" --from "$FROM" --to "$TO"
+      - uses: ./.github/actions/push-state
+        if: success() || failure()

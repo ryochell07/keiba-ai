@@ -1,0 +1,36 @@
+[project]
+name = "keiba-ai"
+version = "0.1.0"
+description = "個人利用専用の競馬AI分析システム (JRA / 地方競馬)"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "requests>=2.32",
+  "beautifulsoup4>=4.12",
+  "lxml>=5.0",
+  "pyyaml>=6.0",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "scikit-learn>=1.5",
+  "lightgbm>=4.5",
+  "charset-normalizer>=3.3",
+  "cryptography>=43",
+]
+
+[project.optional-dependencies]
+compare = ["xgboost>=2.1", "catboost>=1.2"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+keiba = "keiba_ai.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/keiba_ai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: 実サイトへアクセスするテスト (既定では実行しない)"]
+addopts = "-m 'not network'"
