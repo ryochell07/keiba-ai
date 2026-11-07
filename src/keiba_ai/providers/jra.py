@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime, timedelta
 
 from ..db import JST, now_jst
-from ..failures import is_fatal, record_failure
+from ..failures import clean_message, is_fatal, public_fields, record_failure
 from ..http import FetchBlocked, FetchFailed, FetchStop, PoliteClient, load_raw, save_raw
 from ..capture import exotics_due, win_place_due
 from ..ingest import IntegrityError, save_odds, save_race
@@ -120,9 +120,9 @@ class JraProvider(Provider):
         except (FetchFailed, ValueError, IntegrityError) as e:
             con.rollback()
             stats["failed"] += 1
-            log.warning("%s: %s", cname, e)
+            log.warning("失敗 %s", public_fields("JRA", "past_race", e, rid))
             con.execute("INSERT INTO fetch_log(source,url,ref,fetched_at,http_status,bytes,attempts,ok,error)"
-                        " VALUES ('jra','parse',?,?,NULL,0,1,0,?)", (cname, now_jst(), str(e)[:500]))
+                        " VALUES ('jra','parse',?,?,NULL,0,1,0,?)", (cname, now_jst(), clean_message(e)))
             con.commit()
 
     def _capture_all(self, con, race_id: str, win_cname: str, exotics: bool, stats: dict, final_only=False) -> None:

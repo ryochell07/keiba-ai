@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
+import traceback
 
 from .db import now_jst
 from .http import FetchBlocked, FetchFailed, FetchStop
@@ -14,6 +16,11 @@ EXIT_FATAL = 4
 SOURCE = {"JRA": "jra", "NAR": "nar_csv"}
 _SECRET_ENV = ("KEIBA_STATE_KEY", "KEIBA_SITE_PASSPHRASE", "GH_TOKEN", "GITHUB_TOKEN")
 _LEDGER_GUARDS = ("予測台帳", "入力の記録", "取得履歴", "モデル版", "旧予測")
+_URL_QUERY = re.compile(r"(https?://[^\s?'\"]+)\?[^\s'\"]*")
+_BEARER = re.compile(r"(?i)\b(bearer)\s+\S+")
+_CREDENTIAL = re.compile(r"(?i)\b(proxy-authorization|authorization|set-cookie|cookie|x-api-key|api[_-]?key|token|password|passphrase|secret)\s*[:=]\s*\S+")
+_PUBLIC_RACE_ID = re.compile(r"[JN]\d{8}[0-9A-Za-z\u3040-\u30ff\u4e00-\u9fff]{1,16}")
+_TRACE_CHARS = 2000
 
 
 class ModelIntegrityError(ValueError):
@@ -33,21 +40,38 @@ def failure_kind(e: BaseException, stage: str) -> str:
     return "predict" if stage.startswith("predict") else "parse"
 
 
-def clean_message(e: BaseException) -> str:
-    """秘密の値が例外の文面に混ざっていても記録しない。"""
-    text = str(e)
+def _mask(text: str) -> str:
+    """秘密の値と認証情報を伏せる。暗号化される DB に残す文面にも使う。"""
     for name in _SECRET_ENV:
         value = os.environ.get(name)
         if value:
             text = text.replace(value, "***")
-    return text[:500]
+    text = _URL_QUERY.sub(r"\1?***", text)
+    text = _BEARER.sub(r"\1 ***", text)
+    return _CREDENTIAL.sub(r"\1=***", text)
 
 
-def record_failure(con: sqlite3.Connection, org: str, stage: str, e: BaseException, race_id: str | None = None) -> dict:
-    """呼び出し側は先に失敗した分を取り消しておくこと。ここで確定する。"""
-    rec = {"org": org, "stage": stage, "kind": failure_kind(e, stage), "race_id": race_id, "type": type(e).__name__, "message": clean_message(e)}
-    con.execute("INSERT INTO fetch_log(source,url,ref,fetched_at,http_status,bytes,attempts,ok,error) VALUES (?,?,?,?,NULL,0,1,0,?)",
-                (SOURCE[org], f"stage:{stage}", race_id, now_jst(), json.dumps(rec, ensure_ascii=False)))
-    con.commit()
-    log.warning("失敗 %s", json.dumps(rec, ensure_ascii=False))
+def clean_message(e: BaseException) -> str:
+    return _mask(str(e))[:500]
+
+
+def public_fields(org: str | None, stage: str, e: BaseException, race_id: str | None = None) -> dict:
+    """公開ログに出してよい項目だけ。例外の文面は含めない。"""
+    return {"org": org or "-", "stage": stage, "kind": failure_kind(e, stage), "race_id": race_id if race_id and _PUBLIC_RACE_ID.fullmatch(race_id) else None, "type": type(e).__name__}
+
+
+def record_failure(con: sqlite3.Connection, org: str | None, stage: str, e: BaseException, race_id: str | None = None) -> dict:
+    """公開ログには識別情報だけを出し、詳細は暗号化される DB に残す。
+    呼び出し側は先に失敗した分を取り消しておくこと。ここで確定する。"""
+    public = public_fields(org, stage, e, race_id)
+    log.warning("失敗 %s", json.dumps(public, ensure_ascii=False))
+    trace = _mask("".join(traceback.format_exception(type(e), e, e.__traceback__)))[-_TRACE_CHARS:]
+    rec = {**public, "race_id": race_id, "message": clean_message(e), "traceback": trace}
+    try:
+        con.execute("INSERT INTO fetch_log(source,url,ref,fetched_at,http_status,bytes,attempts,ok,error) VALUES (?,?,?,?,NULL,0,1,0,?)",
+                    (SOURCE.get(org, "keiba"), f"stage:{stage}", race_id, now_jst(), json.dumps(rec, ensure_ascii=False)))
+        con.commit()
+    except Exception as db_error:
+        log.warning("失敗の記録に失敗 %s", json.dumps({"org": org or "-", "stage": stage, "type": type(db_error).__name__}, ensure_ascii=False))
+        raise
     return rec

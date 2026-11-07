@@ -311,8 +311,8 @@ class NarCsvProvider(Provider):
                 out.append(import_zip(con, p))
             except (SpecChanged, zipfile.BadZipFile, ValueError) as e:
                 con.rollback()
-                log.error("%s: %s", p.name, e)
-                out.append({"file": p.name, "error": str(e)})
+                record_failure(con, "NAR", "inbox", e)
+                out.append({"file": p.name, "error": type(e).__name__})
         return out
 
     def _download(self, kind: str, query: str, ref: str) -> bytes:
@@ -353,7 +353,7 @@ class NarCsvProvider(Provider):
                 full = bool(full_odds_from and ym >= full_odds_from)
                 out.append(self.fetch_month(con, y, m, "Odds", odds_filter=None if full else _win_place,
                                             once_per_day_only=this_month))
-            log.info("%s 完了: %s", ym, out[-1])
+            log.info("%s 完了: %s", ym, {k: v for k, v in out[-1].items() if k != "warnings"})
         return out
 
     def update(self, con) -> list[dict]:

@@ -97,7 +97,7 @@ def cmd_daily(args, con, sources):
                 if is_fatal(e):
                     raise
                 rec = record_failure(con, "JRA", name, e)
-                failures.append(f"jra {name}: {rec['type']}: {rec['message']}")
+                failures.append(f"jra {name}: {rec['type']}")
                 _record(con, "jra", False, rec["message"])
                 if isinstance(e, (FetchStop, FetchBlocked)):
                     break   # 拒否されたら、この実行ではそれ以上要求しない
@@ -110,7 +110,7 @@ def cmd_daily(args, con, sources):
             if is_fatal(e):
                 raise
             rec = record_failure(con, "NAR", "update", e)
-            failures.append(f"nar: {rec['type']}: {rec['message']}")
+            failures.append(f"nar: {rec['type']}")
             _record(con, "nar_csv", False, rec["message"])
     log.info("nar inbox: %s", NarCsvProvider(sources["sources"]["nar_csv"]).import_inbox(con))
     frozen = bool(config.guards().get("freeze_models"))
@@ -130,7 +130,9 @@ def cmd_daily(args, con, sources):
                     register_bundle(con, row[0], adoption_reason="再学習後のバックテストで合成係数を更新")
                     con.commit()
             except ValueError as e:
-                log.warning("%s", e)
+                con.rollback()
+                from .failures import record_failure as record_train_failure
+                record_train_failure(con, org, "train", e)
     from .failures import is_fatal, record_failure
 
     def guarded(org, stage, fn):
@@ -142,7 +144,7 @@ def cmd_daily(args, con, sources):
             if is_fatal(e):
                 raise
             rec = record_failure(con, org, stage, e)
-            failures.append(f"{org} {stage}: {rec['type']}: {rec['message']}")
+            failures.append(f"{org} {stage}: {rec['type']}")
             return None
 
     for org in _orgs(con, args):

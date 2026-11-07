@@ -119,4 +119,4 @@ def build_site(con: sqlite3.Connection, sources: dict | None = None, out_dir=Non
     (out / "robots.txt").write_text("User-agent: *\nDisallow: /\n")
     payload = collect(con, today)
     (out / "data.enc.json").write_text(json.dumps(encrypt_payload(payload, passphrase)), encoding="utf-8")
-    return f"site: races={len(payload['races'])} predictions={len(payload['predictions'])} -> {out}"
+    return f"site: races={len(payload['races'])} predictions={len(payload['predictions'])}"

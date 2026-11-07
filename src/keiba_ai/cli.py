@@ -5,10 +5,11 @@ import argparse
 import json
 import logging
 import sys
+import warnings
 
 from . import config
 from .db import connect, now_jst
-from .failures import EXIT_FATAL, clean_message, is_fatal
+from .failures import EXIT_FATAL, clean_message, is_fatal, record_failure
 from .http import FetchBlocked, FetchFailed, FetchLimit, FetchStop, PoliteClient
 
 
@@ -30,6 +31,19 @@ def _record(con, source: str, ok: bool, error: str | None = None) -> None:
     else:
         con.execute("UPDATE source_status SET last_error=? WHERE source=?", (f"{now_jst()} {error}", source))
     con.commit()
+
+
+def _public_excepthook(exc_type, exc, tb) -> None:
+    """Actions のログは公開される。想定外の例外でも traceback と文面を出さない。終了コードは変わらず 1。"""
+    print(f"想定外のエラーで停止しました: {exc_type.__name__}", file=sys.stderr)
+
+
+def _public_warning(message, category, filename, lineno, file=None, line=None) -> None:
+    print(f"警告: {category.__name__}", file=sys.stderr)
+
+
+def _command_org(cmd: str) -> str | None:
+    return "JRA" if cmd.startswith("jra") else "NAR" if cmd.startswith("nar") else None
 
 
 _NEEDS_LOCKED_ENV = ("daily", "race-loop", "predict", "train")
@@ -75,6 +89,7 @@ def main(argv=None) -> int:
     register(sub)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    sys.excepthook, warnings.showwarning = _public_excepthook, _public_warning
     config.ensure_dirs()
     if args.cmd == "state":  # 復元先の DB を開いてはいけない (WAL が残って復元した DB を壊す)
         return args.func(args, None, None) or 0
@@ -130,25 +145,32 @@ def main(argv=None) -> int:
                 print(t, con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
             for r in con.execute("SELECT org,MIN(race_date),MAX(race_date),COUNT(*) FROM race GROUP BY org"):
                 print(tuple(r))
-            for r in con.execute("SELECT source,enabled,automated_fetch,license_status,last_success_at,last_error FROM source_status"):
+            # 公開ログに出るので、失敗の内容は表示せず有無だけを出す
+            for r in con.execute("SELECT source,enabled,automated_fetch,license_status,last_success_at,last_error IS NOT NULL FROM source_status"):
                 print(tuple(r))
         else:
             return args.func(args, con, sources) or 0
     except FetchBlocked as e:
-        print(f"取得を中止しました (規約/robots/設定): {e}", file=sys.stderr)
-        _record(con, args.cmd.split("-")[0] if args.cmd.startswith("jra") else "nar_csv", False, str(e))
+        print(f"取得を中止しました (規約/robots/設定): {type(e).__name__}", file=sys.stderr)
+        _record(con, args.cmd.split("-")[0] if args.cmd.startswith("jra") else "nar_csv", False, clean_message(e))
         return 3
-    except FetchLimit as e:
-        print(f"{e}。次回の実行で続きから取得します")
+    except FetchLimit:
+        print("1回の実行の要求数上限に達しました。次回の実行で続きから取得します")
         return 0
     except (FetchStop, FetchFailed) as e:
-        print(f"取得エラー: {e}", file=sys.stderr)
-        _record(con, "jra" if args.cmd.startswith("jra") else "nar_csv", False, str(e))
+        print(f"取得エラー: {type(e).__name__}", file=sys.stderr)
+        _record(con, "jra" if args.cmd.startswith("jra") else "nar_csv", False, clean_message(e))
         return 2
     except Exception as e:
+        if con is not None:
+            try:   # DB が壊れていて残せなくても、詳細を画面には出さない
+                con.rollback()
+                record_failure(con, _command_org(args.cmd), f"command:{args.cmd}", e)
+            except Exception:
+                pass
         if not is_fatal(e):
             raise
-        print(f"整合性に関わるエラーのため停止しました: {type(e).__name__}: {clean_message(e)}", file=sys.stderr)
+        print(f"整合性に関わるエラーのため停止しました: {type(e).__name__}", file=sys.stderr)
         return EXIT_FATAL
     return 0
 
