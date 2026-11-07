@@ -238,3 +238,28 @@ def test_警告の文面とパスを出さない(tmp_path):
     """)
     assert_public(r.stdout + r.stderr)
     assert "RuntimeWarning" in r.stderr and str(tmp_path) not in r.stderr
+
+
+def test_取得記録のURLとエラーを伏せる(con, monkeypatch):
+    import requests
+    from keiba_ai.http import PoliteClient
+    from keiba_ai.redact import mask_url
+    monkeypatch.setenv("KEIBA_SITE_PASSPHRASE", SECRET)
+    assert mask_url("https://x.test/a?CNAME=pw01/AB&type=daily&k_year=2026&k_month=11") == "https://x.test/a?CNAME=pw01/AB&type=daily&k_year=2026&k_month=11"
+    assert mask_url("https://x.test/a?type=daily&token=fake-query-789") == "https://x.test/a?type=daily&token=***"
+    assert mask_url("https://x.test/a") == "https://x.test/a"
+
+    class Session:
+        headers = {}
+
+        def get(self, url, **k):
+            raise requests.ConnectionError(f"{QUERY} {HEADER} key={SECRET}")
+    conf = {"enabled": True, "automated_fetch": True, "min_interval_sec": 0, "permission": {"status": "granted"}}
+    client = PoliteClient("jra", conf, con, session=Session(), retries=1, sleep=lambda s: None)
+    with pytest.raises(FetchFailed):
+        client.fetch("https://example.test/data?type=daily&token=fake-query-789", ref="r1")
+    row = con.execute("SELECT url,error,ok FROM fetch_log ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["ok"] == 0 and row["url"] == "https://example.test/data?type=daily&token=***"
+    for word in (SECRET, "fake-query-789", "fake-header-token-456"):
+        assert word not in row["url"] + row["error"]
+    assert "ConnectionError" in row["error"]   # 調査に必要な内容は残す

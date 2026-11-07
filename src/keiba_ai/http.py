@@ -14,6 +14,7 @@ import requests
 
 from . import config
 from .db import now_jst
+from .redact import mask_text, mask_url
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class PoliteClient:
         self.con.execute(
             "INSERT INTO fetch_log(source,url,ref,fetched_at,http_status,bytes,attempts,ok,error)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
-            (self.source, url, ref, now_jst(), status, size, attempts, int(ok), error))
+            (self.source, mask_url(url), ref, now_jst(), status, size, attempts, int(ok), mask_text(error) if error else error))
         self.con.commit()
 
     def fetch(self, url: str, data: dict | None = None, ref: str | None = None) -> bytes:
