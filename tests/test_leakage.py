@@ -144,3 +144,62 @@ def test_採用グループの列だけがモデルに入る(filled):
     x_cols = [c for c in spec.columns if c.startswith("x_")]
     assert x_cols and all(c.startswith("x_speed_") for c in x_cols)
     assert not [c for c in FeatureSpec.fit(f, groups=()).columns if c.startswith("x_")]
+
+
+def test_未確定レースでも騎手と調教師の成績は前日までの値を使う(con):
+    """学習時と本番で同じ入力なら同じ値になる。未確定の行だけ事前値に潰れてはいけない。"""
+    from conftest import make_race
+    from keiba_ai.ingest import save_race
+    for i, d in enumerate(("2024-06-01", "2024-06-08", "2024-06-15", "2024-06-22", "2024-06-29")):
+        save_race(con, make_race(d, seed=i))
+    target = make_race("2024-07-06", seed=50)
+    save_race(con, target)
+    con.commit()
+    trained = build_features(_f(con))
+    done = _f(con)["race_date"] == "2024-07-06"
+    # 同じレースを未確定として作り直す
+    blank = _f(con)
+    for c in ("finish_pos", "status", "time_sec", "margin", "last3f", "corners", "popularity_final"):
+        blank.loc[blank["race_date"] == "2024-07-06", c] = None
+    serving = build_features(blank)
+    cols = [c for c in trained.columns if c.startswith("x_jk_") or c in ("x_speed_m5", "jk_h_win_rate", "rel_jk_h_win_rate")]
+    pd.testing.assert_frame_equal(trained.loc[done, cols].reset_index(drop=True), serving.loc[done, cols].reset_index(drop=True), check_exact=False)
+    # 固定値に集中していない
+    assert serving.loc[done, "x_jk_win_30"].nunique() > 1
+    assert not np.isclose(serving.loc[done, "x_jk_win_30"], 0.1).all()
+
+
+def test_履歴のない騎手は事前値になる(con):
+    from conftest import make_race
+    from keiba_ai.ingest import save_race
+    save_race(con, make_race("2024-06-01", seed=1))
+    new = make_race("2024-06-08", seed=2, finished=False)
+    for e in new.entries:
+        e.jockey_id, e.jockey_name = "JNEW", "新人"
+    save_race(con, new)
+    con.commit()
+    df = _f(con)
+    f = build_features(df)[df["race_date"] == "2024-06-08"]
+    assert np.isclose(f["x_jk_win_30"], 0.1).all() and np.isclose(f["x_jk_top3_90"], 0.3).all()
+
+
+def test_結果のない過去のレースは前走として扱わない(con):
+    """取り止めになったレースが履歴に入ると、予測だけ前走や休養日数がずれる。"""
+    from conftest import make_race
+    from keiba_ai.features import serving_frame
+    from keiba_ai.ingest import save_race
+    for i, d in enumerate(("2024-06-01", "2024-06-08")):
+        save_race(con, make_race(d, seed=i))
+    clean = make_race("2024-07-06", seed=50, finished=False)
+    save_race(con, clean)
+    con.commit()
+    a = build_features(serving_frame(_f(con), "2024-07-01"))
+    save_race(con, make_race("2024-06-22", no=2, seed=9, finished=False))  # 結果のない過去のレース
+    con.commit()
+    df = _f(con)
+    assert df["race_date"].eq("2024-06-22").any()
+    fr = serving_frame(df, "2024-07-01")
+    assert not fr["race_date"].eq("2024-06-22").any()
+    b = build_features(fr)
+    cols = ["last_finish", "rest_days", "runs_count", "x_jk_win_30"]
+    pd.testing.assert_frame_equal(a[cols].reset_index(drop=True), b[cols].reset_index(drop=True))

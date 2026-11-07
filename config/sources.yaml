@@ -46,6 +46,11 @@ sources:
     license_note: 有料(月額2,090円)。無料条件に合わないため契約しない。
     permission: {status: none, evidence: ""}
 
+# 本番の安全設定
+guards:
+  freeze_models: true     # 評価基盤が固まるまで自動の再学習と差し替えをしない (keiba train は手動で可能)
+  blend_enforce: false    # true で、AI の寄与を確認できない主催は市場単独にする。影響の確認後に判断する
+
 limits:
   max_requests_per_run: 6000        # 1回の実行で超えたら安全に停止
   max_state_size_mb: 1500           # GitHub Release asset 上限(2GB)の手前で停止

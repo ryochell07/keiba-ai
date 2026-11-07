@@ -30,7 +30,33 @@ def validate_race(r: RaceRec) -> list[str]:
     return warn
 
 
-def save_race(con: sqlite3.Connection, r: RaceRec) -> list[str]:
+RACE_FIELDS = ("post_time", "going", "weather", "n_runners")
+ENTRY_FIELDS = ("horse_id", "waku", "jockey_id", "trainer_id", "carried_weight", "body_weight", "body_weight_diff", "status", "finish_pos")
+
+
+def _observe(con: sqlite3.Connection, r: RaceRec, observed_at: str) -> None:
+    """当日以降のレースについて、変わった値だけを取得時刻付きで残す。公表時刻は分からないので NULL のまま。
+    過去レースの一括取り込みでは記録しない (その時点の値ではないため)。"""
+    if r.race_date < observed_at[:10]:
+        return
+    last = {(x[0], x[1]): x[2] for x in con.execute(
+        """SELECT umaban, field, value FROM field_observation f WHERE race_id=? AND observation_id=
+           (SELECT MAX(observation_id) FROM field_observation g WHERE g.race_id=f.race_id AND g.umaban=f.umaban AND g.field=f.field)""", (r.race_id,))}
+    rows = [(0, f, getattr(r, f)) for f in RACE_FIELDS]
+    rows += [(e.umaban, f, getattr(e, f)) for e in r.entries for f in ENTRY_FIELDS]
+    new = [(r.race_id, u, f, str(v), observed_at, r.source) for u, f, v in rows if v is not None and last.get((u, f)) != str(v)]
+    con.executemany("INSERT INTO field_observation(race_id,umaban,field,value,observed_at,source) VALUES (?,?,?,?,?,?)", new)
+
+
+def observed_as_of(con: sqlite3.Connection, race_id: str, at: str) -> dict[tuple[int, str], str]:
+    """at の時点でこちらが把握していた値。記録がない項目は含まない (推測しない)。"""
+    out: dict[tuple[int, str], str] = {}
+    for x in con.execute("SELECT umaban, field, value FROM field_observation WHERE race_id=? AND observed_at<=? ORDER BY observed_at, observation_id", (race_id, at)):
+        out[(x[0], x[1])] = x[2]
+    return out
+
+
+def save_race(con: sqlite3.Connection, r: RaceRec, observed_at: str | None = None) -> list[str]:
     warn = validate_race(r)
     meeting_id = f"{r.org[0]}{r.race_date.replace('-', '')}{r.course_code}"
     upsert(con, "racecourse", {"course_code": r.course_code, "name": r.course_name, "org": r.org}, ["course_code"])
@@ -67,14 +93,18 @@ def save_race(con: sqlite3.Connection, r: RaceRec) -> list[str]:
     for p in r.payouts:
         upsert(con, "payout", {"race_id": r.race_id, "bet_type": p.bet_type, "combo": p.combo,
                                "amount": p.amount, "popularity": p.popularity}, ["race_id", "bet_type", "combo"])
+    _observe(con, r, observed_at or now_jst())
     return warn
 
 
 def save_odds(con: sqlite3.Connection, race_id: str, odds: list[OddsRec], captured_at: str,
               is_final: bool, source: str) -> int:
-    rows = [(race_id, o.bet_type, o.combo, captured_at, o.odds, o.odds_max, o.popularity, int(is_final), source)
+    row = con.execute("SELECT race_date, post_time FROM race WHERE race_id=?", (race_id,)).fetchone()
+    post = f"{row[0]}T{row[1]}:00+09:00" if row and row[1] else None
+    rows = [(race_id, o.bet_type, o.combo, captured_at, o.odds, o.odds_max, o.popularity, int(is_final), source, post,
+             "final" if is_final else ("open" if o.odds > 0 else "no_odds"))
             for o in odds if o.odds is not None]
     con.executemany("INSERT OR IGNORE INTO odds_snapshot"
-                    "(race_id,bet_type,combo,captured_at,odds,odds_max,popularity,is_final,source)"
-                    " VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                    "(race_id,bet_type,combo,captured_at,odds,odds_max,popularity,is_final,source,scheduled_post_at,sale_state)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     return len(rows)

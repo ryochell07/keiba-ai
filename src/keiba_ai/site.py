@@ -59,9 +59,8 @@ def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
         "SELECT model_version_id,org,adopted_at,created_at,train_start,train_end,metrics,comparison FROM model_version WHERE status='active'")}
     preds = []
     if races:
-        for p in con.execute(f"""SELECT p.* FROM prediction p JOIN race r USING(race_id) JOIN model_version m USING(model_version_id)
-                                 WHERE p.race_id IN ({marks}) AND m.status='active'
-                                   AND p.predicted_at=(SELECT MAX(predicted_at) FROM prediction q WHERE q.race_id=p.race_id AND q.model_version_id=p.model_version_id)""", ids):
+        for p in con.execute(f"""SELECT p.* FROM prediction_display p JOIN model_version m USING(model_version_id)
+                                 WHERE p.race_id IN ({marks}) AND m.status='active'""", ids):
             meta = json.loads(p["flags"] or "{}")
             row = {"r": p["race_id"], "b": p["bet_type"], "c": p["combo"], "p": round(p["prob"], 6), "s": p["prob_std"] and round(p["prob_std"], 6),
                    "o": p["odds"], "m": p["odds_max"], "t": p["odds_captured_at"], "ev": p["ev"] if p["ev"] is None else round(p["ev"], 4),
@@ -104,6 +103,7 @@ def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
             "counts": [dict(r) for r in con.execute("SELECT org,COUNT(*) AS races,MIN(race_date) AS first,MAX(race_date) AS last FROM race GROUP BY org")],
             "sources": [dict(r) for r in con.execute("SELECT source,enabled,automated_fetch,license_status,last_success_at,last_error FROM source_status")],
             "errors_7d": con.execute("SELECT COUNT(*) FROM fetch_log WHERE ok=0 AND fetched_at>=date('now','-7 day')").fetchone()[0],
+            "odds_quality": [dict(r) for r in con.execute("SELECT * FROM odds_capture_daily ORDER BY race_date DESC, org LIMIT 14")],
         },
     }
 

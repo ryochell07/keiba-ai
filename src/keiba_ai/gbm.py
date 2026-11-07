@@ -102,8 +102,14 @@ class RaceModel:
     train_end: str = ""
 
     def member_scores(self, feats: pd.DataFrame) -> np.ndarray:
-        X = self.spec.transform(feats)
+        return self.member_scores_x(self.spec.transform(feats))
+
+    def member_scores_x(self, X: pd.DataFrame) -> np.ndarray:
+        """変換済みの入力から採点する。記録した入力の再現に使う。"""
         return np.column_stack([b.predict(X) for b in self.boosters])
+
+    def scores_from(self, X: pd.DataFrame) -> np.ndarray:
+        return self.member_scores_x(X).mean(axis=1)
 
     def scores(self, feats: pd.DataFrame) -> np.ndarray:
         return self.member_scores(feats).mean(axis=1)
@@ -165,7 +171,9 @@ def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds
     va_scores = model.scores(feats[is_valid].reset_index(drop=True))
     model.taus = fit_taus(va_scores, va_idx, va_mask, va_ord)
     model.metrics = {"best_rounds": best_rounds, "n_train_races": len(races) - n_valid, "n_valid_races": n_valid,
-                     "valid_pl_nll": pl_nll(va_scores, va_idx, va_mask, va_ord, model.taus)}
+                     "valid_pl_nll": pl_nll(va_scores, va_idx, va_mask, va_ord, model.taus),
+                     "tree_train_end": tr_f["race_date"].max(), "valid_start": va_f["race_date"].min(), "valid_end": va_f["race_date"].max(),
+                     "hyperparams": {k: v for k, v in {**PARAMS, **(params or {})}.items() if k not in ("verbosity", "num_threads")}}
     return model
 
 

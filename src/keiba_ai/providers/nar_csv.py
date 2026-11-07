@@ -20,7 +20,9 @@ from charset_normalizer import from_bytes
 
 from .. import config
 from ..db import JST, now_jst
-from ..http import FetchBlocked, FetchFailed, PoliteClient
+from ..http import FetchBlocked, FetchFailed, FetchStop, PoliteClient
+from ..capture import exotics_due, win_place_due
+from ..failures import is_fatal, record_failure
 from ..ingest import save_odds, save_race
 from .base import EntryRec, OddsRec, PayoutRec, Provider, RaceRec
 from .jra import month_range
@@ -227,7 +229,25 @@ def import_zip(con, path: Path, columns: dict | None = None, force: bool = False
     return import_bytes(con, path.read_bytes(), path.name, columns, force, odds_filter)
 
 
-def import_bytes(con, raw: bytes, name: str, columns: dict | None = None, force: bool = False, odds_filter=None) -> dict:
+def _per_race(con, on_error, stage: str, race_id: str, fn) -> None:
+    """on_error があれば、1レースの失敗はそのレースだけ取り消して続ける。"""
+    if on_error is None:
+        fn()
+        return
+    con.execute("SAVEPOINT nar_race")
+    try:
+        fn()
+    except Exception as e:
+        con.execute("ROLLBACK TO nar_race")
+        con.execute("RELEASE nar_race")
+        if is_fatal(e):
+            raise
+        on_error(stage, race_id, e)
+    else:
+        con.execute("RELEASE nar_race")
+
+
+def import_bytes(con, raw: bytes, name: str, columns: dict | None = None, force: bool = False, odds_filter=None, on_error=None) -> dict:
     """公式ZIPを取り込む。同一内容は再取り込みしない。odds_filter(race_id, rec) で保存するオッズを絞れる。"""
     columns = columns or load_columns()
     sha = hashlib.sha256(raw).hexdigest()
@@ -243,8 +263,10 @@ def import_bytes(con, raw: bytes, name: str, columns: dict | None = None, force:
         racelist, horselist = read("racelist.csv"), read("horselist.csv")
         if racelist and horselist:
             for race in parse_race_files(racelist, horselist, read("payback.csv"), columns):
-                stats["warnings"] += save_race(con, race)
-                stats["races"] += 1
+                def save_one(race=race):
+                    stats["warnings"] += save_race(con, race)
+                    stats["races"] += 1
+                _per_race(con, on_error, "card_race", race.race_id, save_one)
         known = {r[0] for r in con.execute("SELECT race_id FROM race WHERE org='NAR'")}
         missing = 0
         for n, full in names.items():
@@ -256,9 +278,10 @@ def import_bytes(con, raw: bytes, name: str, columns: dict | None = None, force:
                 if rid not in known:
                     missing += 1
                     continue
-                if odds_filter:
-                    recs = [o for o in recs if odds_filter(rid, o)]
-                stats["odds"] += save_odds(con, rid, recs, captured, captured == "final", "nar_csv")
+                def save_one(rid=rid, recs=recs):
+                    kept = [o for o in recs if odds_filter(rid, o)] if odds_filter else recs
+                    stats["odds"] += save_odds(con, rid, kept, captured, captured == "final", "nar_csv")
+                _per_race(con, on_error, "odds_race", rid, save_one)
         if missing:
             stats["warnings"].append(f"レース情報のないオッズ {missing} レース分を保留")
     con.execute("INSERT OR REPLACE INTO ingested_file(sha256,source,filename,imported_at,rows,detail)"
@@ -342,25 +365,48 @@ class NarCsvProvider(Provider):
         out.append(self.fetch_month(con, now.year, now.month, "Odds", odds_filter=_win_place, once_per_day_only=True))
         return out
 
-    def capture_today(self, con, exotics_within_min: int = 60) -> dict:
+    def capture_today(self, con, exotics_within_min: int = 15) -> dict:
         """当日ファイルで最新の出馬表と発売中オッズを保存する。発走前のレースのオッズだけを残す。"""
         now = datetime.now(JST)
         ts = int(now.timestamp())
         day = now.strftime("%Y%m%d")
-        race = import_bytes(con, self._download("Race", "type=daily", f"daily-race-{ts}"), f"{day}_{ts}_race.zip")
+        failed = 0
+
+        def on_error(stage: str, race_id: str | None, e: Exception) -> None:
+            nonlocal failed
+            failed += 1
+            record_failure(con, "NAR", stage, e, race_id)
+
+        def fetch_file(kind: str, stage: str, suffix: str, odds_filter=None) -> dict:
+            """片方のファイルが失敗しても、もう片方は取り込む。"""
+            try:
+                return import_bytes(con, self._download(kind, "type=daily", f"daily-{suffix}-{ts}"), f"{day}_{ts}_{suffix}.zip", odds_filter=odds_filter, on_error=on_error)
+            except (FetchStop, FetchBlocked):
+                con.rollback()
+                raise
+            except Exception as e:
+                con.rollback()
+                if is_fatal(e):
+                    raise
+                on_error(stage, None, e)
+                return {}
+
+        race = fetch_file("Race", "card_file", "race")
         posts = {r[0]: r[1] for r in con.execute("SELECT race_id,post_time FROM race WHERE org='NAR' AND race_date=?", (now.date().isoformat(),))}
+
+        due = {}
 
         def keep(rid: str, rec: OddsRec) -> bool:
             post = posts.get(rid)
             if not post:
                 return False
-            mins = (datetime.fromisoformat(f"{now.date().isoformat()}T{post}:00+09:00") - now).total_seconds() / 60
-            if mins <= 0:
-                return False
-            return rec.bet_type in ("win", "place") or mins <= exotics_within_min
+            if rid not in due:
+                mins = (datetime.fromisoformat(f"{now.date().isoformat()}T{post}:00+09:00") - now).total_seconds() / 60
+                due[rid] = (win_place_due(con, rid, mins, now), exotics_due(con, rid, mins, now, exotics_within_min))
+            return due[rid][0] if rec.bet_type in ("win", "place") else due[rid][1]
 
-        odds = import_bytes(con, self._download("Odds", "type=daily", f"daily-odds-{ts}"), f"{day}_{ts}_odds.zip", odds_filter=keep)
-        return {"races": race.get("races", 0), "odds": odds.get("odds", 0), "skipped": bool(odds.get("skipped"))}
+        odds = fetch_file("Odds", "odds_file", "odds", keep)
+        return {"races": race.get("races", 0), "odds": odds.get("odds", 0), "skipped": bool(odds.get("skipped")), "failed": failed}
 
     def run(self, con, **kw) -> dict:
         return {"imported": self.import_inbox(con)}

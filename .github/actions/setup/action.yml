@@ -4,7 +4,10 @@ runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@v5
+      with:
+        version: "0.13.7"
     - shell: bash
       run: |
-        uv venv --python 3.12
-        uv pip install -e '.[dev]'
+        # uv.lock のとおりに入れる。ロックと pyproject.toml が食い違えば更新せず失敗する
+        uv sync --locked --extra dev
+        .venv/bin/keiba env-check

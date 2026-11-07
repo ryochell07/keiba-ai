@@ -22,6 +22,14 @@ def load_sources(path: Path | None = None) -> dict:
         return yaml.safe_load(f)
 
 
+def guards() -> dict:
+    """本番の安全設定。設定ファイルがなければ何も止めない。"""
+    try:
+        return load_sources().get("guards", {}) or {}
+    except FileNotFoundError:
+        return {}
+
+
 def ensure_dirs() -> None:
     for p in (DATA, RAW, INBOX_NAR, MODELS, REPORTS):
         p.mkdir(parents=True, exist_ok=True)

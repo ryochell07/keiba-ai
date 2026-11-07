@@ -23,12 +23,14 @@ def expected(prob: float, odds: float | None, odds_max: float | None = None) -> 
     return low, (prob * odds_max - 1 if odds_max is not None else low)
 
 
-def latest_odds(con: sqlite3.Connection, race_id: str, at: str | None = None) -> dict[tuple[str, str], dict]:
-    """at 以前で最新のオッズ。発走前の表示に確定オッズは混ざらないが、確定後は 'final' を返す。"""
+def latest_odds(con: sqlite3.Connection, race_id: str, at: str | None = None, include_final: bool = True) -> dict[tuple[str, str], dict]:
+    """at 以前で最新のオッズ。発走前の表示に確定オッズは混ざらないが、確定後は 'final' を返す。
+    include_final=False なら確定オッズは決して返さない (購入時点の予測用)。"""
     at = at or datetime.now(JST).isoformat(timespec="seconds")
+    final = "captured_at='final' OR " if include_final else ""
     rows = con.execute(
-        """SELECT bet_type, combo, odds, odds_max, captured_at FROM odds_snapshot
-           WHERE race_id=? AND (captured_at='final' OR captured_at<=?)""", (race_id, at)).fetchall()
+        f"""SELECT bet_type, combo, odds, odds_max, captured_at FROM odds_snapshot
+           WHERE race_id=? AND ({final}(captured_at<>'final' AND captured_at<=?))""", (race_id, at)).fetchall()
     out: dict[tuple[str, str], dict] = {}
     for r in sorted(rows, key=lambda x: (x["captured_at"] == "final", x["captured_at"])):
         out[(r["bet_type"], r["combo"])] = dict(r)

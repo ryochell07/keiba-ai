@@ -117,15 +117,36 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     r = make_race("2024-01-01", seed=1)
     save_race(con, r)
     con.execute("INSERT INTO model_version(model_version_id,org,algo,created_at) VALUES ('M','JRA','x','2024')")
-    winner = next(p.combo for p in r.payouts)
-    ins = "INSERT INTO prediction(model_version_id,race_id,bet_type,combo,predicted_at,prob,odds_captured_at,ev) VALUES ('M',?,?,?,?,?,?,?)"
-    con.execute(ins, (r.race_id, "win", winner, "2024-01-01T14:00:00+09:00", .5, "2024-01-01T13:50:00+09:00", .2))
-    other = "1" if winner != "1" else "2"
-    con.execute(ins, (r.race_id, "win", other, "2024-01-01T14:00:00+09:00", .2, "final", 9.0))    # 確定オッズ基準は除外
+    winner = int(next(p.combo for p in r.payouts))
+    other = 1 if winner != 1 else 2
+    con.execute("INSERT INTO prediction_input(feature_hash,columns_hash,n_rows,payload) VALUES ('f','c',8,x'00')")
+
+    def run(pid, at, final=False):
+        tp = "morning"
+        con.execute("""INSERT INTO prediction_run(prediction_id,race_id,org,predicted_at,scheduled_post_at,time_point,model_version_id,bundle_id,input_hash,feature_hash,odds_captured_at,odds_status,odds_same_time,used_model,taus,taus_used)
+                       VALUES (?,?,'JRA',?,'2024-01-01T15:00:00+09:00',?,'M','B','i','f','2024-01-01T13:50:00+09:00','complete',1,'blend','[1,1,1]','[1,1,1]')""", (pid, r.race_id, at, tp))
+        for u in range(1, 9):
+            p = .5 if u == winner else (.2 if u == other else .3 / 6)
+            con.execute("""INSERT INTO prediction_horse(prediction_id,umaban,horse_id,waku,p_win_ai,p_win_market,p_win_blend,p_win_used,strength_ai,strength_used,win_odds)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (pid, u, f"T{u:04d}", (u + 1) // 2, p, 1 / 8, p, p, float(np.log(p)), float(np.log(p)), 2.4 if u == winner else 1.0))
+    run("P1", "2024-01-01T14:00:00+09:00")
     out = reconcile(con, "JRA")
     by = {(x["strategy"], x["bet_type"]): x for x in out["rows"]}
     assert by[("top1", "win")]["roi"] == 5.0
-    assert by[("ev_1.0", "win")]["n_bets"] == 1
+    assert by[("ev_1.0", "win")]["n_bets"] == 1  # 確率×オッズが1以上の馬だけ
+    assert out["by_time_point"]["morning"]["ai"]["n_races"] == 1
     # 発走後に作られた予測は集計しない
-    con.execute("UPDATE prediction SET predicted_at='2024-01-01T16:00:00+09:00'")
+    run("P2", "2024-01-01T16:00:00+09:00")
+    assert reconcile(con, "JRA")["n_races"] == 1
+    assert con.execute("SELECT COUNT(*) FROM prediction_run").fetchone()[0] == 2
+
+
+def test_発走後だけの予測は集計しない(con, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "REPORTS", tmp_path)
+    r = make_race("2024-01-01", seed=1)
+    save_race(con, r)
+    con.execute("INSERT INTO model_version(model_version_id,org,algo,created_at) VALUES ('M','JRA','x','2024')")
+    con.execute("INSERT INTO prediction_input(feature_hash,columns_hash,n_rows,payload) VALUES ('f','c',8,x'00')")
+    con.execute("""INSERT INTO prediction_run(prediction_id,race_id,org,predicted_at,scheduled_post_at,time_point,model_version_id,bundle_id,input_hash,feature_hash,odds_status,used_model,taus,taus_used)
+                   VALUES ('P',?,'JRA','2024-01-01T16:00:00+09:00','2024-01-01T15:00:00+09:00','last','M','B','i','f','none','ai','[1,1,1]','[1,1,1]')""", (r.race_id,))
     assert reconcile(con, "JRA")["rows"] == []

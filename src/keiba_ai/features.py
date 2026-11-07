@@ -56,6 +56,11 @@ def load_frame(con: sqlite3.Connection, org: str, until: str | None = None) -> p
     return df.sort_values(["race_date", "post_time", "race_id", "umaban"], ignore_index=True)
 
 
+def serving_frame(frame: pd.DataFrame, today: str) -> pd.DataFrame:
+    """予測用の行。学習と同じく、結果のない過去の行 (取り止めのレースなど) は履歴に入れない。"""
+    return frame[frame["status"].notna() | (frame["race_date"] >= today)].reset_index(drop=True)
+
+
 _NAR_CLASS = re.compile(r"(?<![A-Za-z])([ABC])\s*([1-4])?(?![A-Za-z])")
 
 
@@ -148,11 +153,16 @@ def _smooth(rate: pd.Series, n: pd.Series, prior: float, k: float = 20.0) -> pd.
 
 
 def _window_rate(d: pd.DataFrame, key: str, val: str, days: int, prior: float) -> pd.Series:
-    """前日までの直近 days 日の平滑化率。当日分は含まない。"""
-    sub = d.loc[d[key].notna() & d[val].notna(), [key, "date", val]]
-    daily = sub.groupby([key, "date"], sort=True)[val].agg(["sum", "count"]).reset_index()
-    if daily.empty:
+    """前日までの直近 days 日の平滑化率。当日分は含まない。履歴がなければ prior。
+
+    結果のない日 (未確定レース) にも行を作る。行がないと結合で欠損になり、本番だけ prior に潰れる。
+    """
+    rows = d.loc[d[key].notna(), [key, "date"]].drop_duplicates()
+    if rows.empty:
         return pd.Series(np.nan, index=d.index)
+    sub = d.loc[d[key].notna() & d[val].notna(), [key, "date", val]]
+    known = sub.groupby([key, "date"])[val].agg(["sum", "count"]).reset_index()
+    daily = rows.merge(known, how="left", on=[key, "date"]).fillna({"sum": 0.0, "count": 0.0}).sort_values([key, "date"], ignore_index=True)
     rolled = (daily.set_index("date").groupby(key)[["sum", "count"]]
               .rolling(f"{days}D", closed="left").sum().reset_index())
     merged = d[[key, "date"]].merge(rolled, how="left", on=[key, "date"])

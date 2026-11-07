@@ -136,3 +136,110 @@ CREATE TABLE IF NOT EXISTS experiment (    -- 実験記録
   decision TEXT, model_version TEXT, used_locked_test INTEGER NOT NULL DEFAULT 0, seconds REAL
 );
 CREATE INDEX IF NOT EXISTS idx_experiment_stage ON experiment(stage);
+
+-- ===== Phase 1: 予測台帳。追記専用で、更新と削除はトリガーで拒否する =====
+CREATE TABLE IF NOT EXISTS prediction_run (
+  prediction_id TEXT PRIMARY KEY,
+  race_id TEXT NOT NULL REFERENCES race(race_id),
+  org TEXT NOT NULL,
+  predicted_at TEXT NOT NULL,              -- 予測生成日時
+  scheduled_post_at TEXT,                  -- 予定発走日時
+  time_point TEXT NOT NULL,                -- day_before/morning/t30/t10/last/unknown
+  minutes_to_post REAL,
+  model_version_id TEXT NOT NULL REFERENCES model_version(model_version_id),
+  bundle_id TEXT NOT NULL,
+  git_commit TEXT,
+  input_hash TEXT NOT NULL,                -- 特徴量+オッズ+モデルのハッシュ
+  feature_hash TEXT NOT NULL REFERENCES prediction_input(feature_hash),
+  odds_captured_at TEXT,                   -- 使ったオッズの最新の取得時刻
+  odds_status TEXT NOT NULL,               -- none/partial/complete
+  odds_same_time INTEGER NOT NULL DEFAULT 0,
+  used_model TEXT NOT NULL,                -- ai/blend/market: 表示と期待値に使った確率
+  blend_alpha REAL, blend_beta REAL,
+  taus TEXT NOT NULL,                      -- AI の τ
+  taus_used TEXT NOT NULL                  -- strength_used に対する τ
+);
+CREATE INDEX IF NOT EXISTS idx_prun_race ON prediction_run(race_id, predicted_at);
+CREATE TABLE IF NOT EXISTS prediction_horse (
+  prediction_id TEXT NOT NULL REFERENCES prediction_run(prediction_id),
+  umaban INTEGER NOT NULL,
+  horse_id TEXT NOT NULL,
+  waku INTEGER,
+  p_win_ai REAL NOT NULL, p_top3_ai REAL,
+  p_win_market REAL,                       -- 同じ時刻の単勝オッズを正規化。全頭そろわなければ NULL
+  p_win_blend REAL, p_top3_blend REAL,
+  p_win_used REAL NOT NULL,
+  strength_ai REAL NOT NULL,
+  strength_used REAL NOT NULL,
+  win_odds REAL, place_odds REAL, place_odds_max REAL,
+  odds_captured_at TEXT,
+  PRIMARY KEY (prediction_id, umaban)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS prediction_input (  -- モデルに渡した入力そのもの。同じ内容は1件にまとめる
+  feature_hash TEXT PRIMARY KEY,
+  columns_hash TEXT NOT NULL,
+  n_rows INTEGER NOT NULL,
+  payload BLOB NOT NULL
+);
+-- 表示専用の最新値。記録ではない (記録は prediction_run / prediction_horse)
+CREATE TABLE IF NOT EXISTS prediction_display (
+  race_id TEXT NOT NULL, bet_type TEXT NOT NULL, combo TEXT NOT NULL,
+  model_version_id TEXT NOT NULL, prediction_id TEXT,
+  predicted_at TEXT NOT NULL,
+  prob REAL NOT NULL, prob_std REAL,
+  odds REAL, odds_max REAL, odds_captured_at TEXT,
+  ev REAL, ev_max REAL, status TEXT, flags TEXT,
+  PRIMARY KEY (race_id, bet_type, combo)
+);
+-- 発走前の情報を取得するたびに、変わった値だけを記録する。published_at は提供元が公表時刻を出さない限り NULL
+CREATE TABLE IF NOT EXISTS field_observation (
+  observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  race_id TEXT NOT NULL,
+  umaban INTEGER NOT NULL DEFAULT 0,       -- 0 はレース全体の項目
+  field TEXT NOT NULL,
+  value TEXT,
+  observed_at TEXT NOT NULL,               -- こちらが取得した時刻
+  published_at TEXT,
+  source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fobs ON field_observation(race_id, umaban, field, observed_at);
+-- モデル本体・校正・合成係数をひとまとめにした版
+CREATE TABLE IF NOT EXISTS model_bundle (
+  bundle_id TEXT PRIMARY KEY,
+  model_version_id TEXT NOT NULL REFERENCES model_version(model_version_id),
+  org TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  git_commit TEXT,                         -- 学習時のコミット。不明なら NULL (推測で埋めない)
+  model_hash TEXT NOT NULL,
+  train_start TEXT, train_end TEXT, tree_train_end TEXT,
+  valid_start TEXT, valid_end TEXT, valid_period_basis TEXT,
+  n_train_races INTEGER, n_valid_races INTEGER,
+  feature_version TEXT, columns_hash TEXT, features TEXT,
+  hyperparams TEXT, n_seeds INTEGER, n_trees TEXT,
+  taus TEXT, tau_period TEXT,
+  blend_alpha REAL, blend_beta REAL, blend_source TEXT, blend_fit_period TEXT, blend_ci TEXT,
+  guard_recommendation TEXT, guard_reason TEXT,
+  adoption_reason TEXT, note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bundle_model ON model_bundle(model_version_id, created_at);
+CREATE TABLE IF NOT EXISTS odds_capture_daily (  -- 集計値なので再計算で置き換える
+  race_date TEXT NOT NULL, org TEXT NOT NULL,
+  n_races INTEGER, any_rate REAL, t30_rate REAL, t10_rate REAL, last_rate REAL,
+  median_delay_t10_min REAL, p90_delay_t10_min REAL, missing_rate REAL, n_errors INTEGER, n_snapshots INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (race_date, org)
+);
+CREATE TRIGGER IF NOT EXISTS prediction_run_no_update BEFORE UPDATE ON prediction_run BEGIN SELECT RAISE(ABORT, '予測台帳は変更できません'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_run_no_delete BEFORE DELETE ON prediction_run BEGIN SELECT RAISE(ABORT, '予測台帳は削除できません'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_horse_no_update BEFORE UPDATE ON prediction_horse BEGIN SELECT RAISE(ABORT, '予測台帳は変更できません'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_horse_no_delete BEFORE DELETE ON prediction_horse BEGIN SELECT RAISE(ABORT, '予測台帳は削除できません'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_input_no_update BEFORE UPDATE ON prediction_input BEGIN SELECT RAISE(ABORT, '入力の記録は変更できません'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_input_no_delete BEFORE DELETE ON prediction_input BEGIN SELECT RAISE(ABORT, '入力の記録は削除できません'); END;
+CREATE TRIGGER IF NOT EXISTS field_observation_no_update BEFORE UPDATE ON field_observation BEGIN SELECT RAISE(ABORT, '取得履歴は変更できません'); END;
+CREATE TRIGGER IF NOT EXISTS field_observation_no_delete BEFORE DELETE ON field_observation BEGIN SELECT RAISE(ABORT, '取得履歴は削除できません'); END;
+CREATE TRIGGER IF NOT EXISTS model_bundle_no_update BEFORE UPDATE ON model_bundle BEGIN SELECT RAISE(ABORT, 'モデル版の記録は変更できません'); END;
+CREATE TRIGGER IF NOT EXISTS model_bundle_no_delete BEFORE DELETE ON model_bundle BEGIN SELECT RAISE(ABORT, 'モデル版の記録は削除できません'); END;
+-- 以前の予測テーブルは保存したまま凍結する
+CREATE TRIGGER IF NOT EXISTS prediction_legacy_no_update BEFORE UPDATE ON prediction BEGIN SELECT RAISE(ABORT, '旧予測テーブルは凍結しています'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_legacy_no_delete BEFORE DELETE ON prediction BEGIN SELECT RAISE(ABORT, '旧予測テーブルは凍結しています'); END;
+CREATE TRIGGER IF NOT EXISTS prediction_legacy_no_insert BEFORE INSERT ON prediction BEGIN SELECT RAISE(ABORT, '旧予測テーブルは凍結しています'); END;

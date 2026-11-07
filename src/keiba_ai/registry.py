@@ -44,6 +44,8 @@ def _register(con, org: str, model: RaceModel, status: str, n_seeds: int, compar
                  json.dumps(model.spec.columns, ensure_ascii=False), json.dumps({"n_seeds": n_seeds, "taus": model.taus}),
                  json.dumps(model.metrics), str(path.relative_to(config.ROOT)), status,
                  now_jst() if status == "active" else None, json.dumps(comparison, ensure_ascii=False) if comparison else None))
+    from .bundles import register_bundle
+    register_bundle(con, mid, adoption_reason=(comparison or {}).get("reason") or "比較なしで採用 (初回または --force)", trained_now=True)
     return mid
 
 

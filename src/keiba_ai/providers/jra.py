@@ -6,7 +6,9 @@ import re
 from datetime import date, datetime, timedelta
 
 from ..db import JST, now_jst
-from ..http import FetchFailed, PoliteClient, load_raw, save_raw
+from ..failures import is_fatal, record_failure
+from ..http import FetchBlocked, FetchFailed, FetchStop, PoliteClient, load_raw, save_raw
+from ..capture import exotics_due, win_place_due
 from ..ingest import IntegrityError, save_odds, save_race
 from . import jra_parser as P
 from .base import Provider, RaceRec
@@ -167,17 +169,25 @@ class JraProvider(Provider):
                 con.commit()
                 stats["races"] += 1
                 stats["entries"] += len(race.entries)
-            except (FetchFailed, ValueError, IntegrityError) as e:
+            except (FetchStop, FetchBlocked):
                 con.rollback()
+                raise
+            except Exception as e:
+                con.rollback()
+                if is_fatal(e):
+                    raise
                 stats["failed"] += 1
-                log.warning("%s: %s", cname, e)
+                record_failure(con, "JRA", "card_race", e, race_id_from_cname(cname))
         return stats
 
-    def capture_odds(self, con, exotics_within_min: int = 60) -> dict:
+    def capture_odds(self, con, exotics_within_min: int = 15) -> dict:
         """発売中オッズを取得時刻付きで保存。発走前のレースだけが対象で、確定前の値を上書きしない。"""
         stats = {"races": 0, "odds": 0, "failed": 0}
         now = datetime.now(JST)
         today = now.date().isoformat()
+        pending = con.execute("SELECT race_id, post_time FROM race WHERE org='JRA' AND race_date=? AND post_time IS NOT NULL", (today,)).fetchall()
+        if not any(win_place_due(con, r[0], (datetime.fromisoformat(f"{today}T{r[1]}:00+09:00") - now).total_seconds() / 60, now) for r in pending):
+            return stats  # 取得すべきレースがなければ公式サイトへ要求しない
         top = self._post("accessO.html", ODDS_TOP)
         day_pages = [c for c in P.links(top, "pw15orl") if race_date_from_cname(c) == today]
         wins = {c for c in P.links(top, "pw151ou") if race_date_from_cname(c) == today}
@@ -192,16 +202,21 @@ class JraProvider(Provider):
             seen.add(rid)
             post = datetime.fromisoformat(f"{today}T{row['post_time']}:00+09:00")
             mins = (post - now).total_seconds() / 60
-            if mins < 0:
+            if mins < 0 or not win_place_due(con, rid, mins, now):
                 continue
             try:
-                self._capture_all(con, rid, cname, mins <= exotics_within_min, stats)
+                self._capture_all(con, rid, cname, exotics_due(con, rid, mins, now, exotics_within_min), stats)
                 con.commit()
                 stats["races"] += 1
-            except (FetchFailed, ValueError) as e:
+            except (FetchStop, FetchBlocked):
                 con.rollback()
+                raise
+            except Exception as e:
+                con.rollback()
+                if is_fatal(e):
+                    raise
                 stats["failed"] += 1
-                log.warning("%s: %s", cname, e)
+                record_failure(con, "JRA", "odds_race", e, rid)
         return stats
 
     def run(self, con, **kw) -> dict:

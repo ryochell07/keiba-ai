@@ -79,7 +79,7 @@ def test_バックテストと予測(world, monkeypatch):
     assert retrain_with_gate(con, "JRA", n_seeds=2)["decision"] == "見送り"  # 新データなし
     out = predict_races(con, "JRA", "2030-01-01", at="2030-01-05T14:30:00+09:00")
     assert out["races"] == 1
-    rows = con.execute("SELECT * FROM prediction WHERE race_id='J203001050501'").fetchall()
+    rows = con.execute("SELECT * FROM prediction_display WHERE race_id='J203001050501'").fetchall()
     bets = {x["bet_type"] for x in rows}
     assert {"win", "place", "quinella", "exacta", "wide", "trio", "trifecta"} <= bets
     assert "bracket_quinella" not in bets  # 6頭立て
@@ -94,7 +94,7 @@ def test_バックテストと予測(world, monkeypatch):
         assert "長期回収率は未検証" in flags["flags"]
     # 取得時刻より前の時点では、そのオッズを使わない
     predict_races(con, "JRA", "2030-01-01", at="2030-01-05T13:00:00+09:00")
-    row = con.execute("SELECT odds,status FROM prediction WHERE race_id='J203001050501' AND bet_type='win' AND combo='1' AND predicted_at LIKE '%13:00%'").fetchone()
+    row = con.execute("SELECT odds,status FROM prediction_display WHERE race_id='J203001050501' AND bet_type='win' AND combo='1' AND predicted_at LIKE '%13:00%'").fetchone()
     assert row["odds"] is None and row["status"] == "オッズ未取得"
 
 

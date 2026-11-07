@@ -8,6 +8,7 @@ import sys
 
 from . import config
 from .db import connect, now_jst
+from .failures import EXIT_FATAL, clean_message, is_fatal
 from .http import FetchBlocked, FetchFailed, FetchLimit, FetchStop, PoliteClient
 
 
@@ -29,6 +30,9 @@ def _record(con, source: str, ok: bool, error: str | None = None) -> None:
     else:
         con.execute("UPDATE source_status SET last_error=? WHERE source=?", (f"{now_jst()} {error}", source))
     con.commit()
+
+
+_NEEDS_LOCKED_ENV = ("daily", "race-loop", "predict", "train")
 
 
 def _jra(con, sources):
@@ -74,10 +78,19 @@ def main(argv=None) -> int:
     config.ensure_dirs()
     if args.cmd == "state":  # 復元先の DB を開いてはいけない (WAL が残って復元した DB を壊す)
         return args.func(args, None, None) or 0
-    con = connect()
-    sources = config.load_sources()
-    _sync_sources(con, sources)
+    if args.cmd == "env-check":  # 環境の確認で DB を開いたり移行したりしない
+        return args.func(args, None, None) or 0
+    if args.cmd in _NEEDS_LOCKED_ENV:
+        from .envcheck import EXIT_ENV, env_mismatches
+        bad = env_mismatches()
+        if bad:
+            print("環境が uv.lock と違うため停止しました:\n" + "\n".join(bad), file=sys.stderr)
+            return EXIT_ENV
+    con = None
     try:
+        con = connect()
+        sources = config.load_sources()
+        _sync_sources(con, sources)
         if args.cmd == "init-db":
             print("OK", config.DB_PATH)
         elif args.cmd == "jra-backfill":
@@ -113,7 +126,7 @@ def main(argv=None) -> int:
                 print(prov.capture_today(con))
             _record(con, "nar_csv", True)
         elif args.cmd == "status":
-            for t in ("race", "entry", "result", "payout", "odds_snapshot", "horse", "prediction", "model_version", "fetch_log"):
+            for t in ("race", "entry", "result", "payout", "odds_snapshot", "horse", "prediction", "prediction_run", "prediction_horse", "field_observation", "model_bundle", "model_version", "fetch_log"):
                 print(t, con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
             for r in con.execute("SELECT org,MIN(race_date),MAX(race_date),COUNT(*) FROM race GROUP BY org"):
                 print(tuple(r))
@@ -132,6 +145,11 @@ def main(argv=None) -> int:
         print(f"取得エラー: {e}", file=sys.stderr)
         _record(con, "jra" if args.cmd.startswith("jra") else "nar_csv", False, str(e))
         return 2
+    except Exception as e:
+        if not is_fatal(e):
+            raise
+        print(f"整合性に関わるエラーのため停止しました: {type(e).__name__}: {clean_message(e)}", file=sys.stderr)
+        return EXIT_FATAL
     return 0
 
 
