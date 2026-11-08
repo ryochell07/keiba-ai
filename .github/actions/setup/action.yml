@@ -3,11 +3,24 @@ description: Python 環境を用意する
 runs:
   using: composite
   steps:
-    - uses: astral-sh/setup-uv@v5
+    - id: setup_uv
+      uses: astral-sh/setup-uv@v5
+      continue-on-error: true
       with:
         version: "0.13.7"
+    - if: steps.setup_uv.outcome == 'failure'
+      shell: bash
+      run: |
+        # GitHub から uv を取得できないときは、同じ版を PyPI から入れる
+        echo "::warning::uv を PyPI から取得します"
+        python3 -m pip install --user --break-system-packages "uv==0.13.7"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     - shell: bash
       run: |
         # uv.lock のとおりに入れる。ロックと pyproject.toml が食い違えば更新せず失敗する
-        uv sync --locked --extra dev
+        for i in 1 2 3; do
+          uv sync --locked --extra dev && break
+          [ "$i" = 3 ] && { echo "::error::環境を用意できませんでした"; exit 1; }
+          sleep $((i * 30))
+        done
         .venv/bin/keiba env-check
