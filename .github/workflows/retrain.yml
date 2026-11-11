@@ -1,0 +1,91 @@
+name: retrain
+# 手動でだけ動かす。合成係数の推定 (backtest)、再学習と採用 (train)、直前のモデルへ戻す (rollback)。定期実行はしない。
+# save を付けた実行は状態の排他を数時間持つので、発走前オッズの取得が終わる 22:30 以降 (日本時間) に始める。
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "backtest=合成係数の推定 / train=再学習と採用 / rollback=直前のモデルへ戻す"
+        type: choice
+        options: [backtest, train, rollback]
+        required: true
+      org:
+        description: "主催"
+        type: choice
+        options: [NAR, JRA]
+        required: true
+      save:
+        description: "結果を本番の状態に保存する (付けなければ所要時間と動作の確認だけで、何も変えない)"
+        type: boolean
+        default: false
+      seeds:
+        description: "train: 乱数違いのモデルの本数"
+        type: choice
+        options: ["3", "2", "1"]
+        default: "3"
+      force:
+        description: "train: 旧モデルとの比較をせずに採用する"
+        type: boolean
+        default: false
+      start:
+        description: "backtest: 評価を始める月の1日 (YYYY-MM-01)"
+        default: "2026-03-01"
+      step:
+        description: "backtest: 再学習の間隔 (月)"
+        type: choice
+        options: ["2", "3"]
+        default: "2"
+permissions:
+  contents: write
+# 保存しない実行は状態を書き換えないので、発走前オッズの取得を待たせない別の組にする。主催と処理ごとに分けて同時に試せるようにする
+concurrency: {group: "${{ inputs.save && 'keiba-state' || format('keiba-retrain-check-{0}-{1}', inputs.org, inputs.task) }}", cancel-in-progress: false}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
+      ALLOW_PRIVATE_RUN: ${{ vars.ALLOW_PRIVATE_RUN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/guard
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/pull-state
+      - name: 実行
+        env:
+          TASK: ${{ inputs.task }}
+          ORG: ${{ inputs.org }}
+          SEEDS: ${{ inputs.seeds }}
+          FORCE: ${{ inputs.force }}
+          START: ${{ inputs.start }}
+          STEP: ${{ inputs.step }}
+        run: |
+          if ! printf '%s' "$START" | grep -Eq '^[0-9]{4}-[0-9]{2}-01$'; then
+            echo "::error::start は YYYY-MM-01 の形で指定してください"
+            exit 1
+          fi
+          case "$TASK" in
+            backtest) set -- backtest --org "$ORG" --start "$START" --step "$STEP" ;;
+            train)    set -- train --org "$ORG" --seeds "$SEEDS"; [ "$FORCE" = "true" ] && set -- "$@" --force ;;
+            rollback) set -- rollback --org "$ORG" ;;
+          esac
+          # ログは公開されるので、成績の数値を含む標準出力は残さず、採否と所要時間だけを出す
+          begin=$(date +%s)
+          # メモリ不足で打ち切られても経過が残るように、5分ごとに空きメモリを出す
+          ( while sleep 300; do
+              echo "経過 $(( ($(date +%s) - begin) / 60 )) 分、空きメモリ $(free -m | awk '/^Mem:/{print $7}') MB"
+            done ) 2>/dev/null &
+          watch=$!
+          rc=0
+          .venv/bin/keiba "$@" > "$RUNNER_TEMP/retrain.out" || rc=$?
+          pkill -P "$watch" 2>/dev/null || true
+          if [ "$TASK" = "rollback" ]; then
+            cat "$RUNNER_TEMP/retrain.out"   # 戻した先のモデルIDだけが出る
+          else
+            grep -o '"decision": "[^"]*"' "$RUNNER_TEMP/retrain.out" || true
+          fi
+          echo "$TASK $ORG: 終了コード $rc、所要 $(( ($(date +%s) - begin) / 60 )) 分"
+          exit "$rc"
+      - uses: ./.github/actions/push-state
+        if: inputs.save && success()

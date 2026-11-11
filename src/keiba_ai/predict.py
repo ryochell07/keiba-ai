@@ -75,7 +75,9 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
         alpha, beta = bundle["blend_alpha"], bundle["blend_beta"]
     else:
         alpha, beta = DEFAULT_BLEND
-    enforce = bool(config.guards().get("blend_enforce")) and bundle["guard_recommendation"] == "market_only"
+    guards = config.guards()
+    # 市場単独にするのは、設定で主催を指定したときと、ガード有効時に AI の寄与を確認できないとき
+    enforce = org in (guards.get("market_only_orgs") or []) or (bool(guards.get("blend_enforce")) and bundle["guard_recommendation"] == "market_only")
     past_roi = load_past_roi(org)
     t1, t2, t3 = model.taus
     commit = git_commit()
@@ -115,7 +117,7 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
                 p1_bl, _, p3_bl = joint_top3(b_s, taus_blend)
                 top3_bl = p3_bl.sum(axis=(1, 2)) + p3_bl.sum(axis=(0, 2)) + p3_bl.sum(axis=(0, 1))
             if complete and enforce:
-                # ガード有効時は市場単独。AI の寄与を確認できない合成は使わない
+                # 市場単独 (AI の係数 0)。AI の寄与を確認できない合成は使わない。AI と合成の確率は比較用に台帳へ残す
                 taus, used = taus_blend, "market"
                 strength = lambda s: blend_strength(s, win_odds, 0.0, 1.0, t1)
             elif complete:
