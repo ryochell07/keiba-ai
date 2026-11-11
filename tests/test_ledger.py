@@ -319,6 +319,40 @@ def test_ガード有効時は市場単独になる(world, monkeypatch):
     assert all(abs(x[0] - x[1]) < 1e-9 for x in h)
 
 
+def test_指定した主催はオッズが揃うと市場単独になり比較用の確率は台帳に残る(world, monkeypatch):
+    con, _ = world
+    rng = np.random.default_rng(9)
+    full = [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)]
+
+    def predict(date, guards, odds):
+        monkeypatch.setattr(config, "guards", lambda: guards)
+        r, _ = _future(rng, "10", 12)
+        r.race_date = date
+        save_race(con, r, observed_at=f"{date}T08:00:00+09:00")
+        save_odds(con, r.race_id, odds, f"{date}T08:50:00+09:00", False, "t")
+        predict_races(con, "JRA", date, at=f"{date}T09:00:00+09:00")
+        run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (r.race_id,)).fetchone()
+        return run, con.execute("SELECT * FROM prediction_horse WHERE prediction_id=? ORDER BY umaban", (run["prediction_id"],)).fetchall()
+
+    # ガード全体は無効のままでも、指定した主催だけは市場単独にする
+    run, hs = predict("2030-03-06", {"blend_enforce": False, "market_only_orgs": ["JRA"]}, full)
+    assert run["used_model"] == "market"
+    assert all(abs(h["p_win_used"] - h["p_win_market"]) < 1e-9 for h in hs)
+    assert sum(h["p_win_used"] for h in hs) == pytest.approx(1.0)
+    # AI と合成の確率は比較用に残る。合成は市場と同じ値ではない
+    assert run["blend_alpha"] is not None and all(h["p_win_ai"] is not None and h["p_win_blend"] is not None for h in hs)
+    assert max(abs(h["p_win_blend"] - h["p_win_market"]) for h in hs) > 1e-4
+    shown = [json.loads(x[0]) for x in con.execute("SELECT flags FROM prediction_display WHERE race_id=?", (run["race_id"],))]
+    assert shown and not any(x["blended"] for x in shown)
+    # オッズが揃うまでは、指定した主催でも AI 単独
+    run, _ = predict("2030-03-07", {"market_only_orgs": ["JRA"]}, full[:5])
+    assert run["used_model"] == "ai"
+    # 指定していない主催は合成のまま
+    run, hs = predict("2030-03-08", {"market_only_orgs": ["NAR"]}, full)
+    assert run["used_model"] == "blend"
+    assert all(abs(h["p_win_used"] - h["p_win_blend"]) < 1e-9 for h in hs)
+
+
 def test_凍結中は自動で再学習しない(world, monkeypatch):
     con, _ = world
     monkeypatch.setattr(config, "guards", lambda: {"freeze_models": True})

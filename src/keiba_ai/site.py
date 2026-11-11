@@ -94,6 +94,7 @@ def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
         "races": list(races.values()),
         "predictions": preds,
         "models": models,
+        "market_only_orgs": config.guards().get("market_only_orgs") or [],
         "backtests": reports("backtest"),
         "compare": reports("compare"),
         "forward": reports("forward"),

@@ -12,7 +12,7 @@ from . import config
 from .backtest import assert_time_split, evaluate
 from .db import JST, now_jst
 from .features import add_market, build_features, load_frame
-from .gbm import RaceModel, train_race_model
+from .gbm import REFIT_SCALE, RaceModel, train_race_model
 
 log = logging.getLogger(__name__)
 MIN_HOLDOUT_RACES = 100
@@ -45,7 +45,11 @@ def _register(con, org: str, model: RaceModel, status: str, n_seeds: int, compar
                  json.dumps(model.metrics), str(path.relative_to(config.ROOT)), status,
                  now_jst() if status == "active" else None, json.dumps(comparison, ensure_ascii=False) if comparison else None))
     from .bundles import register_bundle
-    register_bundle(con, mid, adoption_reason=(comparison or {}).get("reason") or "比較なしで採用 (初回または --force)", trained_now=True)
+    note = None
+    if model.metrics.get("refit"):
+        note = (f"木の本数は検証期間の早期終了で決め、その {REFIT_SCALE} 倍の本数で検証期間も含めて学習し直した。"
+                "温度と valid_pl_nll は学習し直す前のモデルの検証値で、採用したモデル自体は検証期間を学習済み")
+    register_bundle(con, mid, adoption_reason=(comparison or {}).get("reason") or "比較なしで採用 (初回または --force)", trained_now=True, note=note)
     return mid
 
 

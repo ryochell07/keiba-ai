@@ -150,7 +150,8 @@ function comboCard(p,opts={}){const r=R[p.r];
   ${opts.extra||''}${p.f?`<div class="flags">${p.f.map(x=>`<span class="flag">${esc(x)}</span>`).join('')}</div>`:''}</button>`}
 function chips(attr,cur,opts){return `<div class="filters">${opts.map(([v,l])=>`<button class="chip" data-${attr}="${esc(v)}" aria-pressed="${cur===v}">${esc(l)}</button>`).join('')}</div>`}
 function dateChips(){const ds=[...new Set(D.races.filter(orgOk).map(r=>r.date))].sort();return ds.length>1?chips('date',S.date,ds.map(d=>[d,md(d)+(d===D.today?' 今日':'')])):''}
-const CAUTION='<div class="notice">確率はAIと単勝オッズの合成です。期待値は推定で、プラスでも利益は保証されません。</div>';
+function caution(){const m=(D.market_only_orgs||[]).map(o=>o==='JRA'?'中央':'地方').join('・');
+  return `<div class="notice">確率はAIと単勝オッズの合成です${m?`（${m}は、オッズが揃うとAIを使わず単勝オッズだけで出します）`:''}。期待値は推定で、プラスでも利益は保証されません。</div>`}
 function bestOf(rid){const ps=P[rid];const e=ps.filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev)[0];return e||ps.filter(p=>p.b==='win').sort((a,b)=>b.p-a.p)[0]}
 const VIEWS={
 home(){const rs=raceList();const all=inScope();const top=upcoming(all).filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev).slice(0,10);
@@ -162,14 +163,14 @@ home(){const rs=raceList();const all=inScope();const top=upcoming(all).filter(p=
   const heading=S.date===D.today?'本日の開催':`次の開催 ${md(S.date)}`;
   return dateChips()+`<h2>${heading}</h2>`+(rs.length?`<div class="grid">${Object.values(byCourse).map(c=>`<div class="tile"><div class="v">${esc(c.course)}</div><div class="l">${c.org==='JRA'?'中央':'地方'} ${c.n}レース</div></div>`).join('')}</div>`:`<div class="empty">この条件の開催はありません。</div>`)
   +`<p class="meta">予測更新 ${at?at.slice(5,16).replace('T',' ').replace('-','/'):'-'} ・ モデル ${model} ・ 取得エラー(7日) ${errs}件</p>`
-  +`<h2>期待値上位</h2>`+(top.length?CAUTION+`<div class="list2">${top.map(p=>comboCard(p)).join('')}</div>`:`<div class="empty">オッズ未取得のため期待値はまだ計算できません。下のAI注目レースを確認できます。</div>`)
+  +`<h2>期待値上位</h2>`+(top.length?caution()+`<div class="list2">${top.map(p=>comboCard(p)).join('')}</div>`:`<div class="empty">オッズ未取得のため期待値はまだ計算できません。下のAI注目レースを確認できます。</div>`)
   +`<h2>注目レース</h2><div class="list2">${notable.map(x=>raceCard(x.r)).join('')||'<div class="empty">これから発走する予測済みのレースはありません。</div>'}</div>`},
 races(){if(S.race)return raceDetail(R[S.race]);const rs=raceList();const by={};rs.forEach(r=>(by[r.course]=by[r.course]||[]).push(r));
   return dateChips()+(Object.entries(by).map(([c,l])=>`<h2>${esc(c)} ${l.length}R</h2><div class="list2">${l.map(raceCard).join('')}</div>`).join('')||'<div class="empty">公開中のレースはありません。</div>')},
 rank(){const kinds=[['ev','期待値'],['bet','券種別'],['race','レース別'],['prob','AI確率'],['gap','人気との乖離']];
   const bets=BET_ORDER.filter(b=>inScope().some(p=>p.b===b));if(!bets.includes(S.bet))S.bet=bets[0]||'win';
   let body='',all=upcoming(inScope());
-  if(S.rank==='ev'){const rows=all.filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev).slice(0,100);body=rows.length?CAUTION+list(rows):noOdds(all)}
+  if(S.rank==='ev'){const rows=all.filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev).slice(0,100);body=rows.length?caution()+list(rows):noOdds(all)}
   if(S.rank==='bet'){const rows=all.filter(p=>p.b===S.bet).sort((a,b)=>(b.ev??-9)-(a.ev??-9)||b.p-a.p).slice(0,60);body=chips('bet',S.bet,bets.map(b=>[b,label(b)]))+`<p class="meta">JRAの控除率 ${(D.takeout[S.bet]*100).toFixed(1)}%。確率×オッズが1を超えると期待値プラスです。</p>`+list(rows)}
   if(S.rank==='race'){const rows=raceList().filter(r=>!started(r)).map(bestOf).filter(Boolean).sort((a,b)=>(b.ev??-9)-(a.ev??-9)||b.p-a.p);body=`<p class="meta">各レースで最も評価の高い買い目です。</p>`+list(rows)}
   if(S.rank==='prob'){const rows=all.filter(p=>p.b===S.bet).sort((a,b)=>b.p-a.p).slice(0,60);body=chips('bet',S.bet,bets.map(b=>[b,label(b)]))+list(rows)}

@@ -15,7 +15,7 @@ from keiba_ai.ingest import save_odds, save_race
 from keiba_ai.predict import predict_races
 from keiba_ai.registry import retrain_with_gate
 from keiba_ai.providers.base import EntryRec, OddsRec, PayoutRec, RaceRec
-from keiba_ai.site import build_site, encrypt_payload
+from keiba_ai.site import build_site, collect, encrypt_payload
 
 
 @pytest.fixture(scope="module")
@@ -110,6 +110,10 @@ def test_暗号化ページ(world, monkeypatch, tmp_path):
     key = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=base64.b64decode(e["salt"]), iterations=e["iter"]).derive(b"test-passphrase")
     plain = json.loads(gzip.decompress(AESGCM(key).decrypt(base64.b64decode(e["iv"]), base64.b64decode(e["ct"]), None)))
     assert plain["races"][0]["id"] == "J203001050501" and plain["predictions"]
+    # 市場単独にする主催はページの注意書きに使う
+    assert plain["market_only_orgs"] == []
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    assert collect(con, "2030-01-01")["market_only_orgs"] == ["JRA"]
 
 
 def test_暗号文は合言葉なしで読めない():

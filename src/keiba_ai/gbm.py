@@ -8,7 +8,7 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import minimize_scalar
 from scipy.special import logsumexp
 
 from .features import FeatureSpec, mask_late_info
@@ -17,6 +17,9 @@ from .features import FeatureSpec, mask_late_info
 PARAMS = dict(learning_rate=0.0312, num_leaves=58, min_data_in_leaf=364, feature_fraction=0.592, bagging_fraction=0.856,
               bagging_freq=1, lambda_l2=2.68, verbosity=-1, num_threads=0)
 TOP_K_WEIGHTS = (1.0, 0.7, 0.5)
+ROUNDS = 2500              # 木の本数の上限。800 では地方が早期終了の前に上限に達していた
+REFIT_SCALE = 1.15         # 検証分を足して学習し直すとき、データが増える分だけ木を増やす倍率
+LOG_TAU_BOUNDS = (-3.0, 3.0)   # 温度の探索範囲 (約 0.05〜20)
 
 
 def order_matrix(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -77,11 +80,31 @@ def pl_nll(scores: np.ndarray, idx, mask, orders, taus=(1.0, 1.0, 1.0), top_k: i
 
 
 def fit_taus(scores, idx, mask, orders) -> tuple[float, float, float]:
-    """着順が下がるほどランダム性が増す効果を位置別の温度として推定する (Henery/Stern 型の補正)。"""
-    def f(lt):
-        return pl_nll(scores, idx, mask, orders, tuple(np.exp(lt)))
-    r = minimize(f, np.zeros(3), method="Nelder-Mead", options=dict(maxiter=300, xatol=1e-3, fatol=1e-5))
-    return tuple(float(x) for x in np.exp(r.x))
+    """着順が下がるほどランダム性が増す効果を位置別の温度として推定する (Henery/Stern 型の補正)。
+
+    温度は自分の着順の項にしか効かず、その項は 1/温度 について凸なので、着順ごとに1変数で解く。
+    3変数を 0 から同時に探すと、最初の刻みが収束判定より小さく、初期値のまま終わることがあった。"""
+    s = np.where(mask, scores[np.clip(idx, 0, None)], -np.inf)
+    alive = mask.copy()
+    rows = np.arange(len(idx))
+    taus = []
+    for k in range(3):
+        pick = orders[:, k]
+        has = pick >= 0
+        if not has.any():
+            taus.append(1.0)
+            continue
+        lg = np.where(alive, s, -np.inf)[has]
+        chosen = lg[np.arange(len(lg)), pick[has]]
+
+        def f(lt, lg=lg, chosen=chosen):
+            inv = np.exp(-lt)
+            return float((logsumexp(lg * inv, axis=1) - chosen * inv).sum())
+
+        r = minimize_scalar(f, bounds=LOG_TAU_BOUNDS, method="bounded", options=dict(xatol=1e-6))
+        taus.append(float(np.exp(r.x)) if r.fun < f(0.0) else 1.0)   # 点数に差がなく温度が決まらないときは 1 のまま
+        alive[rows[has], pick[has]] = False
+    return tuple(taus)
 
 
 def softmax_by_race(scores: np.ndarray, race_ids: pd.Series, tau: float = 1.0) -> np.ndarray:
@@ -133,9 +156,13 @@ def trainable(frame: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, p
     return frame[keep].reset_index(drop=True), feats[keep].reset_index(drop=True)
 
 
-def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds: int = 3, rounds: int = 800,
-                     valid_share: float = 0.15, groups=None, params: dict | None = None, offset: np.ndarray | None = None) -> RaceModel:
-    """時系列の末尾を検証に使い、早期終了と温度を決める。ランダム分割はしない。"""
+def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds: int = 3, rounds: int = ROUNDS,
+                     valid_share: float = 0.15, groups=None, params: dict | None = None, offset: np.ndarray | None = None,
+                     refit: bool = True) -> RaceModel:
+    """時系列の末尾を検証に使い、早期終了と温度を決める。ランダム分割はしない。
+
+    refit では、決まった木の本数を REFIT_SCALE 倍にして検証分も含めた全データで学習し直し、それを予測に使う。
+    学習し直したモデルには未学習の検証データが残らないので、温度と検証の指標は学習し直す前のモデルのものを使う。"""
     frame, feats = trainable(frame, feats)
     frame = frame.copy()
     frame["finish_pos"] = pd.to_numeric(frame["finish_pos"], errors="coerce")
@@ -151,7 +178,8 @@ def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds
     Xv = spec.transform(feats[is_valid].reset_index(drop=True))
     tr_idx, tr_mask, tr_ord = order_matrix(tr_f)
     va_idx, va_mask, va_ord = order_matrix(va_f)
-    best_rounds = []
+    all_idx, all_mask, all_ord = order_matrix(frame) if refit else (None, None, None)
+    best_rounds, refit_rounds, va_members = [], [], []
     for seed in range(n_seeds):
         Xt = spec.transform(mask_late_info(feats[~is_valid].reset_index(drop=True), tr_f["race_id"], seed=seed))
         dtrain = lgb.Dataset(Xt, free_raw_data=False, categorical_feature=spec.categorical)
@@ -163,16 +191,30 @@ def train_race_model(frame: pd.DataFrame, feats: pd.DataFrame, org: str, n_seeds
         def metric(preds, _ds):
             return "pl_nll", pl_nll(preds, va_idx, va_mask, va_ord), False
 
-        booster = lgb.train({**PARAMS, **(params or {}), "objective": obj, "seed": seed + 1}, dtrain, rounds, valid_sets=[dvalid],
+        train_params = {**PARAMS, **(params or {}), "seed": seed + 1}
+        booster = lgb.train({**train_params, "objective": obj}, dtrain, rounds, valid_sets=[dvalid],
                             feval=metric, callbacks=[lgb.early_stopping(60, verbose=False)])
         best_rounds.append(booster.best_iteration)
         booster = _trim(booster)
+        va_members.append(booster.predict(Xv))
+        if refit:
+            del dtrain, dvalid, Xt
+            n = max(1, round(best_rounds[-1] * REFIT_SCALE))
+            Xa = spec.transform(mask_late_info(feats, frame["race_id"], seed=seed))
+            dall = lgb.Dataset(Xa, free_raw_data=False, categorical_feature=spec.categorical)
+
+            def obj_all(preds, _ds):
+                return pl_grad_hess(preds, all_idx, all_mask, all_ord)
+
+            booster = lgb.train({**train_params, "objective": obj_all}, dall, n)
+            refit_rounds.append(n)
         model.boosters.append(booster)
-    va_scores = model.scores(feats[is_valid].reset_index(drop=True))
+    va_scores = np.column_stack(va_members).mean(axis=1)
     model.taus = fit_taus(va_scores, va_idx, va_mask, va_ord)
-    model.metrics = {"best_rounds": best_rounds, "n_train_races": len(races) - n_valid, "n_valid_races": n_valid,
+    model.metrics = {"best_rounds": best_rounds, "n_train_races": len(races) if refit else len(races) - n_valid, "n_valid_races": n_valid,
                      "valid_pl_nll": pl_nll(va_scores, va_idx, va_mask, va_ord, model.taus),
-                     "tree_train_end": tr_f["race_date"].max(), "valid_start": va_f["race_date"].min(), "valid_end": va_f["race_date"].max(),
+                     "tree_train_end": (frame if refit else tr_f)["race_date"].max(), "valid_start": va_f["race_date"].min(), "valid_end": va_f["race_date"].max(),
+                     "rounds_cap": rounds, "refit": refit, "refit_rounds": refit_rounds,
                      "hyperparams": {k: v for k, v in {**PARAMS, **(params or {})}.items() if k not in ("verbosity", "num_threads")}}
     return model
 

@@ -362,6 +362,22 @@ def test_ワークフローはロックファイルを使う():
     assert (PROJECT / "uv.lock").exists() and (PROJECT / ".python-version").read_text().strip().startswith("3.12.")
 
 
+def test_再学習は手動でだけ動き保存は明示したときだけ():
+    import yaml
+    flow = yaml.safe_load((PROJECT / ".github/workflows/retrain.yml").read_text(encoding="utf-8"))
+    on = flow[True]   # YAML は on を真偽値として読む
+    assert list(on) == ["workflow_dispatch"]
+    assert on["workflow_dispatch"]["inputs"]["save"]["default"] is False
+    assert on["workflow_dispatch"]["inputs"]["force"]["default"] is False
+    steps = flow["jobs"]["run"]["steps"]
+    assert [s.get("uses") for s in steps][:4] == ["actions/checkout@v4", "./.github/actions/guard", "./.github/actions/setup", "./.github/actions/pull-state"]
+    assert steps[-1]["uses"] == "./.github/actions/push-state" and steps[-1]["if"] == "inputs.save && success()"
+    assert flow["jobs"]["run"]["timeout-minutes"] <= 350   # 1 ジョブ 6 時間の上限に収める
+    # 定期実行の再学習は止めたまま。中央だけ市場単独にする
+    guards = yaml.safe_load((PROJECT / "config/sources.yaml").read_text(encoding="utf-8"))["guards"]
+    assert guards["freeze_models"] is True and guards["blend_enforce"] is False and guards["market_only_orgs"] == ["JRA"]
+
+
 # --- 中央の発売前ページ -----------------------------------------------------------------------
 @pytest.mark.parametrize("cell", ["発売前", "----", "取消", ""])
 def test_発売前や取消の表記はオッズとして登録しない(con, cell):

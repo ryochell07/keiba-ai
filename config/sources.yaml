@@ -50,6 +50,7 @@ sources:
 guards:
   freeze_models: true     # 評価基盤が固まるまで自動の再学習と差し替えをしない (keiba train は手動で可能)
   blend_enforce: false    # true で、AI の寄与を確認できない主催は市場単独にする。影響の確認後に判断する
+  market_only_orgs: [JRA] # オッズが揃ったら AI の係数を 0 にして単勝オッズだけで確率を出す主催。中央は検証で AI の上乗せが 0 だった
 
 limits:
   max_requests_per_run: 6000        # 1回の実行で超えたら安全に停止
