@@ -1,4 +1,5 @@
 name: retrain
+run-name: "retrain ${{ inputs.task }} ${{ inputs.org }}${{ inputs.save && ' (保存あり)' || ' (保存なし)' }}"
 # 手動でだけ動かす。合成係数の推定 (backtest)、再学習と採用 (train)、直前のモデルへ戻す (rollback)。定期実行はしない。
 # save を付けた実行は状態の排他を数時間持つので、発走前オッズの取得が終わる 22:30 以降 (日本時間) に始める。
 on:
