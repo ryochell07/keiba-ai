@@ -19,9 +19,6 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px so
 .head{display:flex;align-items:center;justify-content:space-between;gap:8px;max-width:980px;margin:auto}
 h1{font-size:16px;margin:0;font-weight:700}
 .meta{color:var(--sub);font-size:12.5px}
-.seg{display:inline-flex;background:var(--chip);border-radius:8px;padding:2px}
-.seg button{border:0;background:none;padding:5px 11px;border-radius:6px;font-size:13px;min-height:32px}
-.seg button[aria-pressed=true]{background:var(--card);font-weight:600;box-shadow:0 0 0 1px var(--line)}
 main{padding:14px 16px 96px;max-width:980px;margin:auto}
 nav.bottom{position:fixed;bottom:0;left:0;right:0;z-index:6;background:var(--card);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(6,1fr);padding-bottom:env(safe-area-inset-bottom)}
 nav.bottom button{border:0;background:none;padding:10px 1px 9px;font-size:12px;color:var(--sub);min-height:52px}
@@ -42,6 +39,13 @@ button.card{cursor:pointer}
 .stats b{display:block;color:var(--ink);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
 .flags{margin-top:6px;display:flex;gap:4px;flex-wrap:wrap}
 .flag{background:var(--warn-bg);color:var(--warn);font-size:11.5px;padding:1px 7px;border-radius:5px}
+.tag{font-size:11.5px;padding:1px 7px;border-radius:5px;background:var(--chip);color:var(--sub);white-space:nowrap}
+.tag.pos{background:var(--acc);color:var(--acc-ink)}
+.mk{display:inline-block;min-width:1.3em;font-weight:700;color:var(--acc)}
+.pick{margin-top:6px;display:flex;gap:4px 12px;align-items:baseline;flex-wrap:wrap}
+dl.gl{margin:4px 0 0;font-size:13px}
+dl.gl dt{font-weight:600;margin-top:10px}
+dl.gl dd{margin:2px 0 0;color:var(--sub)}
 .notice{background:var(--warn-bg);color:var(--warn);padding:9px 12px;border-radius:8px;font-size:13px;margin-bottom:12px}
 .empty{color:var(--sub);padding:24px 8px;text-align:center}
 h2{font-size:15px;margin:20px 0 8px}
@@ -56,7 +60,10 @@ h3{font-size:13.5px;margin:0 0 6px;font-weight:600}
 table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
 th,td{padding:6px 5px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
-td.name{white-space:normal;min-width:96px}
+td.name{white-space:normal;min-width:96px;text-align:left}
+th.l{text-align:left}
+table.kv td{text-align:left;white-space:normal}
+table.kv td:first-child{color:var(--sub);width:9.5em}
 th{color:var(--mute);font-weight:500;font-size:12px}
 .scroll{overflow-x:auto}
 .back{border:0;background:none;color:var(--acc);padding:4px 0 10px;font-weight:600;min-height:36px}
@@ -84,7 +91,7 @@ label.rem{display:flex;gap:6px;margin-top:10px;font-size:13px;color:var(--sub);a
   <div class="err" id="err" role="alert"></div>
 </div>
 <div id="app" hidden>
-<header><div class="head"><div><h1>keiba-ai</h1><div class="meta" id="gen"></div></div><div class="seg" id="org" role="group" aria-label="主催の切り替え"></div></div></header>
+<header><div class="head"><div><h1>keiba-ai</h1><div class="meta" id="gen"></div></div></div></header>
 <main id="main"></main>
 <nav class="bottom" id="tabs" aria-label="メイン"></nav>
 </div>
@@ -109,18 +116,16 @@ async function unlock(pw,remember){
 }
 $('#f').addEventListener('submit',ev=>{ev.preventDefault();unlock($('#pw').value,$('#rem').checked)});
 let D=null;
-const S={tab:'home',org:'all',date:null,race:null,bet:'win',detailBet:'win',rank:'ev',aorg:null};
+const S={tab:'home',date:null,race:null,bet:'win',detailBet:'win',rank:'race',aorg:null,rsort:'venue',dsort:'prob',rrank:'time'};
 const TABS=[['home','今日'],['races','レース'],['rank','ランキング'],['analysis','分析'],['lab','モデル'],['status','状態']];
 const R={},P={};
 const BET_ORDER=['win','place','bracket_quinella','quinella','wide','exacta','trio','trifecta','bracket_exacta'];
 function start(){
   D.races.forEach(r=>{R[r.id]=r;P[r.id]=[]});
   D.predictions.forEach(p=>P[p.r]&&P[p.r].push(p));
-  const orgs=[...new Set(D.races.map(r=>r.org))];
   $('#lock').hidden=true;$('#app').hidden=false;
-  $('#gen').textContent=D.generated_at.slice(5,16).replace('T',' ').replace('-','/')+' 更新';
+  $('#gen').textContent=fmtAt(D.generated_at)+' 更新';
   $('#tabs').innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}">${l}</button>`).join('');
-  $('#org').innerHTML=[['all','すべて'],['JRA','中央'],['NAR','地方']].map(([v,l])=>`<button data-org="${v}">${l}</button>`).join('');
   const dates=[...new Set(D.races.map(r=>r.date))].sort();
   const next=D.races.filter(r=>r.date>=D.today&&!started(r)).map(r=>r.date).sort()[0];S.date=next||(dates.includes(D.today)?D.today:(dates[0]||null));
   S.aorg=Object.keys(D.backtests)[0]||null;
@@ -128,10 +133,9 @@ function start(){
 }
 function go(h){if(location.hash===h)render();else location.hash=h}
 function route(){const m=location.hash.match(/^#race\/(.+)$/);const rid=m&&decodeURIComponent(m[1]);if(rid&&R[rid]){S.race=rid;S.tab='races'}else{S.race=null;const t=location.hash.slice(1);if(TABS.some(x=>x[0]===t))S.tab=t}render();window.scrollTo(0,0)}
-const orgOk=r=>S.org==='all'||r.org===S.org;
 const started=r=>!!r.time&&new Date(`${r.date}T${r.time}:00+09:00`)<new Date();
 const upcoming=rows=>rows.filter(p=>!started(R[p.r]));
-const raceList=()=>D.races.filter(r=>orgOk(r)&&(!S.date||r.date===S.date));
+const raceList=()=>D.races.filter(r=>!S.date||r.date===S.date);
 const inScope=()=>raceList().flatMap(r=>P[r.id]);
 const label=b=>D.bet_labels[b]||b;
 const md=d=>d?d.slice(5).replace('-','/'):'';
@@ -141,41 +145,73 @@ const pct0=v=>v==null?'-':(v*100).toFixed(1)+'%';
 const num=v=>v==null?'-':v>=1000?Math.round(v).toLocaleString():v.toFixed(1);
 const oddsTxt=p=>p.o==null?'-':(p.m!=null?`${num(p.o)}〜${num(p.m)}`:num(p.o));
 const sign=v=>(v>=0?'+':'')+(v*100).toFixed(0)+'%';
+const fmtAt=s=>s?s.slice(5,16).replace('T',' ').replace('-','/'):'-';
+const orgName=o=>o==='JRA'?'中央':'地方';
+// 印は単勝の確率順: ◎1位 ○2位 ▲3位 △4・5位
+const MARKS=['◎','○','▲','△','△'];
+const winOf=rid=>P[rid].filter(p=>p.b==='win').sort((a,b)=>b.p-a.p);
+const markOf=rid=>Object.fromEntries(winOf(rid).slice(0,MARKS.length).map((p,i)=>[p.c,MARKS[i]]));
+const horseName=(r,u)=>r.horses.find(h=>h.u==u)?.name||'';
+const bestEv=rid=>P[rid].filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev)[0];
+// 500点以上で95%区間の下限が100%を超えた買い方。これがない限り「回収率100%超」とは言わない
+const sureRows=()=>Object.values(D.backtests).flatMap(b=>b.rows).filter(r=>r.n_bets>=500&&(r.roi_ci_low||0)>1);
+function glossary(){const mo=(D.market_only_orgs||[]).map(orgName).join('・');
+  return `<details class="card" style="margin-top:14px"><summary>用語の説明</summary><dl class="gl">
+  <dt>印（◎○▲△）</dt><dd>勝率の高い順の目印です。◎が1位、○が2位、▲が3位、△が4・5位です。</dd>
+  <dt>勝率・複勝率・的中確率</dt><dd>その馬が1着になる確率、複勝が当たる確率、その買い目が当たる確率の推定です。オッズが出る前はAIだけで出し、出た後はAIと単勝オッズを合成します（市場の評価が大部分を占めます）。${mo?mo+'は、オッズが揃うと単勝オッズだけで出します。':''}</dd>
+  <dt>期待値</dt><dd>的中確率×オッズ−1 です。+20%なら、推定が正しければ100円あたり平均120円戻る計算です。オッズは発走まで変わります。${sureRows().length?'':'これまでの検証では、期待値プラスの買い目を買い続けても、回収率は100%を確実には超えていません（ランキングの「買い方の実績」）。'}</dd>
+  <dt>信頼度 A/B/C</dt><dd>確率の推定がどれだけ安定しているかの目安で、当たりやすさではありません。推定のばらつきが大きい、出走馬の過去の出走が平均3走未満、確率が1%未満、の3つのうち当てはまる数が0ならA、1ならB、2以上ならCです。</dd>
+  <dt>過去走数</dt><dd>買い目に含まれる馬の、過去の出走数の平均です。少ないほど推定が不安定です。</dd>
+  <dt>オッズの「〜」</dt><dd>複勝とワイドはオッズに幅があるので、下限〜上限で表示します。期待値も同じ幅になります。</dd>
+  <dt>回収率</dt><dd>払戻の合計÷購入額の合計です。100%で収支がトントンです。</dd>
+  <dt>注意の表示</dt><dd>「長期回収率は未検証」は、発走前のオッズで十分な実績がないという意味です。「同条件の過去回収率」は、同じ券種で期待値プラスと判定した買い目の、過去の回収率です。</dd>
+  </dl></details>`}
 function evTxt(p){if(p.ev==null)return '<span class="ev none">オッズ未取得</span>';const c=p.ev>0?'pos':'neg';return `<span class="ev ${c}">${sign(p.ev)}${p.evm!=null&&p.evm!==p.ev?'〜'+sign(p.evm):''}</span>`}
 function names(p){const r=R[p.r];if(!r||p.b.startsWith('bracket'))return '';return p.c.split('-').map(u=>r.horses.find(h=>h.u==u)?.name||u).map(esc).join(' - ')}
 function comboCard(p,opts={}){const r=R[p.r];
   return `<button class="card" data-race="${esc(p.r)}"><div class="top"><span class="combo">${esc(label(p.b))} ${esc(p.c)}</span>${evTxt(p)}</div>
   <div class="names">${opts.noRace?'':raceLabel(r)+' '}${names(p)}</div>
-  <div class="stats"><div>AI確率<b>${pct(p.p)}</b></div><div>オッズ<b>${oddsTxt(p)}</b></div><div>平均走数<b>${p.n??'-'}</b></div><div>信頼度<b>${p.cf||'-'}</b></div></div>
+  <div class="stats"><div>的中確率<b>${pct(p.p)}</b></div><div>オッズ<b>${oddsTxt(p)}</b></div><div>過去走数<b>${p.n??'-'}</b></div><div>信頼度<b>${p.cf||'-'}</b></div></div>
   ${opts.extra||''}${p.f?`<div class="flags">${p.f.map(x=>`<span class="flag">${esc(x)}</span>`).join('')}</div>`:''}</button>`}
 function chips(attr,cur,opts){return `<div class="filters">${opts.map(([v,l])=>`<button class="chip" data-${attr}="${esc(v)}" aria-pressed="${cur===v}">${esc(l)}</button>`).join('')}</div>`}
-function dateChips(){const ds=[...new Set(D.races.filter(orgOk).map(r=>r.date))].sort();return ds.length>1?chips('date',S.date,ds.map(d=>[d,md(d)+(d===D.today?' 今日':'')])):''}
-function caution(){const m=(D.market_only_orgs||[]).map(o=>o==='JRA'?'中央':'地方').join('・');
+function dateChips(){const ds=[...new Set(D.races.map(r=>r.date))].sort();return ds.length>1?chips('date',S.date,ds.map(d=>[d,md(d)+(d===D.today?' 今日':'')])):''}
+function caution(){const m=(D.market_only_orgs||[]).map(orgName).join('・');
   return `<div class="notice">確率はAIと単勝オッズの合成です${m?`（${m}は、オッズが揃うとAIを使わず単勝オッズだけで出します）`:''}。期待値は推定で、プラスでも利益は保証されません。</div>`}
 function bestOf(rid){const ps=P[rid];const e=ps.filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev)[0];return e||ps.filter(p=>p.b==='win').sort((a,b)=>b.p-a.p)[0]}
 const VIEWS={
 home(){const rs=raceList();const all=inScope();const top=upcoming(all).filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev).slice(0,10);
   const byCourse={};rs.forEach(r=>{(byCourse[r.org+r.course]=byCourse[r.org+r.course]||{org:r.org,course:r.course,n:0}).n++});
   const at=all.map(p=>p.at).filter(Boolean).sort().pop();
-  const model=Object.values(D.models).map(m=>`${m.org} ${esc(m.model_version_id.split('-').pop().slice(0,12))}`).join(' / ')||'未学習';
+  const model=Object.values(D.models).map(m=>`${orgName(m.org)} ${fmtAt(m.adopted_at)}採用`).join(' / ')||'未学習';
   const errs=D.data_status.errors_7d;
   const notable=rs.filter(r=>!started(r)).map(r=>({r,b:bestOf(r.id)})).filter(x=>x.b).sort((a,b)=>(b.b.ev??-9)-(a.b.ev??-9)||b.b.p-a.b.p).slice(0,4);
   const heading=S.date===D.today?'本日の開催':`次の開催 ${md(S.date)}`;
   return dateChips()+`<h2>${heading}</h2>`+(rs.length?`<div class="grid">${Object.values(byCourse).map(c=>`<div class="tile"><div class="v">${esc(c.course)}</div><div class="l">${c.org==='JRA'?'中央':'地方'} ${c.n}レース</div></div>`).join('')}</div>`:`<div class="empty">この条件の開催はありません。</div>`)
-  +`<p class="meta">予測更新 ${at?at.slice(5,16).replace('T',' ').replace('-','/'):'-'} ・ モデル ${model} ・ 取得エラー(7日) ${errs}件</p>`
+  +`<p class="meta">予測更新 ${fmtAt(at)} ・ モデル ${model} ・ 取得エラー(7日) ${errs}件</p>`
   +`<h2>期待値上位</h2>`+(top.length?caution()+`<div class="list2">${top.map(p=>comboCard(p)).join('')}</div>`:`<div class="empty">オッズ未取得のため期待値はまだ計算できません。下のAI注目レースを確認できます。</div>`)
   +`<h2>注目レース</h2><div class="list2">${notable.map(x=>raceCard(x.r)).join('')||'<div class="empty">これから発走する予測済みのレースはありません。</div>'}</div>`},
-races(){if(S.race)return raceDetail(R[S.race]);const rs=raceList();const by={};rs.forEach(r=>(by[r.course]=by[r.course]||[]).push(r));
-  return dateChips()+(Object.entries(by).map(([c,l])=>`<h2>${esc(c)} ${l.length}R</h2><div class="list2">${l.map(raceCard).join('')}</div>`).join('')||'<div class="empty">公開中のレースはありません。</div>')},
-rank(){const kinds=[['ev','期待値'],['bet','券種別'],['race','レース別'],['prob','AI確率'],['gap','人気との乖離']];
+races(){if(S.race)return raceDetail(R[S.race]);const rs=raceList();
+  if(!rs.length)return dateChips()+'<div class="empty">公開中のレースはありません。</div>';
+  const head=dateChips()+chips('rsort',S.rsort,[['venue','会場順'],['time','時間順']]);
+  if(S.rsort==='time'){const t=[...rs].sort((a,b)=>(a.time||'99:99').localeCompare(b.time||'99:99')||a.course.localeCompare(b.course,'ja'));
+    const up=t.filter(r=>!started(r)),done=t.filter(started);
+    return head+(up.length?`<div class="list2">${up.map(raceCard).join('')}</div>`:'<div class="empty">これから発走するレースはありません。</div>')
+      +(done.length?`<details><summary>発走済み ${done.length}レース</summary><div class="list2">${done.map(raceCard).join('')}</div></details>`:'')+glossary()}
+  const by={};rs.forEach(r=>(by[r.course]=by[r.course]||[]).push(r));
+  return head+Object.entries(by).map(([c,l])=>`<h2>${esc(c)} ${l.length}R</h2><div class="list2">${l.map(raceCard).join('')}</div>`).join('')+glossary()},
+rank(){const kinds=[['race','レース別'],['ev','期待値'],['bet','券種別'],['prob','的中確率'],['gap','人気との乖離'],['roi','買い方の実績']];
+  if(S.rank==='roi')return chips('rank',S.rank,kinds)+roiView()+glossary();
   const bets=BET_ORDER.filter(b=>inScope().some(p=>p.b===b));if(!bets.includes(S.bet))S.bet=bets[0]||'win';
   let body='',all=upcoming(inScope());
-  if(S.rank==='ev'){const rows=all.filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev).slice(0,100);body=rows.length?caution()+list(rows):noOdds(all)}
-  if(S.rank==='bet'){const rows=all.filter(p=>p.b===S.bet).sort((a,b)=>(b.ev??-9)-(a.ev??-9)||b.p-a.p).slice(0,60);body=chips('bet',S.bet,bets.map(b=>[b,label(b)]))+`<p class="meta">JRAの控除率 ${(D.takeout[S.bet]*100).toFixed(1)}%。確率×オッズが1を超えると期待値プラスです。</p>`+list(rows)}
-  if(S.rank==='race'){const rows=raceList().filter(r=>!started(r)).map(bestOf).filter(Boolean).sort((a,b)=>(b.ev??-9)-(a.ev??-9)||b.p-a.p);body=`<p class="meta">各レースで最も評価の高い買い目です。</p>`+list(rows)}
-  if(S.rank==='prob'){const rows=all.filter(p=>p.b===S.bet).sort((a,b)=>b.p-a.p).slice(0,60);body=chips('bet',S.bet,bets.map(b=>[b,label(b)]))+list(rows)}
-  if(S.rank==='gap'){const rows=all.filter(p=>p.gap!=null).sort((a,b)=>b.gap-a.gap).slice(0,60);body=`<p class="meta">市場と合成する前のAI勝率から、単勝オッズを正規化した市場確率を引いた差です。</p>`+(rows.length?`<div class="list2">${rows.map(p=>comboCard(p,{extra:`<div class="stats"><div>市場確率<b>${pct(p.mk)}</b></div><div>乖離<b>${(p.gap>=0?'+':'')+(p.gap*100).toFixed(1)}pt</b></div><div>人気<b>${p.pop}</b></div></div>`})).join('')}</div>`:noOdds(all))}
-  return dateChips()+chips('rank',S.rank,kinds)+body},
+  if(S.rank==='race'){const key={time:r=>r.time||'99:99',top:r=>-(winOf(r.id)[0]?.p||0),ev:r=>-(bestEv(r.id)?.ev??-9)}[S.rrank];
+    const rs=raceList().filter(r=>!started(r)&&winOf(r.id).length).sort((a,b)=>{const x=key(a),y=key(b);return x<y?-1:x>y?1:0});
+    body=chips('rrank',S.rrank,[['time','時間順'],['top','◎の勝率順'],['ev','期待値順']])+`<p class="meta">これから発走するレースの印（勝率の高い順）と、期待値が最も高い買い目です。◎の勝率が高いほど、本命が堅いレースです。</p>`
+      +(rs.length?`<div class="list2">${rs.map(raceCard).join('')}</div>`:'<div class="empty">これから発走する予測済みのレースはありません。</div>')}
+  if(S.rank==='ev'){const rows=all.filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev).slice(0,100);body=`<p class="meta">全券種を、的中確率×オッズが大きい順に並べます。+20%は、推定が正しければ100円あたり平均120円戻る計算です。</p>`+(rows.length?caution()+list(rows):noOdds(all))}
+  if(S.rank==='bet'){const rows=all.filter(p=>p.b===S.bet).sort((a,b)=>(b.ev??-9)-(a.ev??-9)||b.p-a.p).slice(0,60);body=chips('bet',S.bet,bets.map(b=>[b,label(b)]))+`<p class="meta">選んだ券種を、期待値の高い順に並べます。オッズ取得前の買い目は的中確率の順です。中央の控除率は ${(D.takeout[S.bet]*100).toFixed(1)}% です。</p>`+list(rows)}
+  if(S.rank==='prob'){const rows=all.filter(p=>p.b===S.bet).sort((a,b)=>b.p-a.p).slice(0,60);body=chips('bet',S.bet,bets.map(b=>[b,label(b)]))+`<p class="meta">選んだ券種を、当たりやすい順に並べます。当たりやすい買い目ほど、オッズは低くなります。</p>`+list(rows)}
+  if(S.rank==='gap'){const rows=all.filter(p=>p.gap!=null).sort((a,b)=>b.gap-a.gap).slice(0,60);body=`<p class="meta">市場と合成する前のAIの勝率から、単勝オッズから求めた市場の勝率を引いた差です。プラスなら、AIが市場より高く評価しています。</p>`+(rows.length?`<div class="list2">${rows.map(p=>comboCard(p,{extra:`<div class="stats"><div>市場の勝率<b>${pct(p.mk)}</b></div><div>乖離<b>${(p.gap>=0?'+':'')+(p.gap*100).toFixed(1)}pt</b></div><div>人気<b>${p.pop}</b></div></div>`})).join('')}</div>`:noOdds(all))}
+  return dateChips()+chips('rank',S.rank,kinds)+body+glossary()},
 analysis(){const orgs=Object.keys(D.backtests);if(!orgs.length)return '<div class="empty">バックテストはまだありません。</div>';
   if(!orgs.includes(S.aorg))S.aorg=orgs[0];const b=D.backtests[S.aorg],s=b.summary,org=S.aorg;
   const top1=b.rows.filter(r=>r.strategy==='top1').sort((x,y)=>BET_ORDER.indexOf(x.bet_type)-BET_ORDER.indexOf(y.bet_type));
@@ -208,14 +244,16 @@ analysis(){const orgs=Object.keys(D.backtests);if(!orgs.length)return '<div clas
   <h2>候補馬の絞り込み検証</h2><div class="card scroll"><table><tr><th>候補頭数</th><th>1-3着を含む割合</th></tr>${Object.entries(b.candidate_coverage).map(([k,v])=>`<tr><td>上位${k}頭</td><td>${pct0(v)}</td></tr>`).join('')}</table></div>
   ${cmp?`<h2>新旧モデルの比較</h2><div class="card"><div class="meta">${esc(cmp.reason)}（${esc(cmp.holdout[0])}〜${esc(cmp.holdout[1])}）</div><div class="scroll"><table><tr><th>指標</th><th>旧</th><th>新</th></tr>${[['Log Loss','win_logloss_model',3],['Brier','brier',3],['本命的中','top1_hit',3],['本命回収率','top1_win_roi',3],['レース数','n_races',0]].map(([l,k,d])=>`<tr><td>${l}</td><td>${(+cmp.old[k]).toFixed(d)}</td><td>${(+cmp.new[k]).toFixed(d)}</td></tr>`).join('')}</table></div></div>`:''}
   ${D.compare[org]?`<h2>手法の比較</h2><div class="card scroll"><table><tr><th>モデル</th><th>Log Loss</th><th>本命的中</th></tr>${D.compare[org].map(c=>`<tr><td>${esc(c.model)}</td><td>${c.win_logloss==null?'-':c.win_logloss.toFixed(3)}</td><td>${pct0(c.top1_hit)}</td></tr>`).join('')}</table></div>`:''}`},
-lab(){const L=D.lab;if(!L)return '<div class="empty">改善実験の結果はまだありません。</div>';const F=L.final;
+lab(){const L=D.lab;const cur=`<h2>使用中のモデル</h2>${modelCards()}<p class="meta">版はモデルを学習し直すたびに新しくなります。予測の記録には版が残るので、版ごとの成績を後から比べられます。</p>`;
+  if(!L)return cur;const F=L.final;
   const row=(name,r,dec)=>`<tr><td class="name">${esc(name)}</td><td>${r.log_loss.toFixed(4)}</td><td>${r.brier.toFixed(4)}</td><td>${pct0(r.top1_hit)}</td><td>${pct0(r.roi)}</td><td>${dec||''}</td></tr>`;
   const head='<tr><th>モデル</th><th>Log Loss</th><th>Brier</th><th>的中</th><th>回収率</th><th></th></tr>';
   const bets=['win','place','bracket_quinella','quinella','wide','exacta','trio','trifecta','bracket_exacta'];
   const fmtD=v=>v==null?'-':(v>=0?'+':'')+v.toFixed(4);
   const thr=['1.0','1.05','1.1','1.15','1.2','1.3','1.5'];
   const cell=(b,t)=>{const r=F.rows.find(x=>x.bet_type===b&&x.strategy==='blend_ev_'+t);return r?`<td>${r.n_bets}<div class="meta">${(r.roi*100).toFixed(0)}%</div></td>`:'<td>-</td>'};
-  return `<div class="notice">市場を安定して上回るモデルと、回収率100%を超える買い方は、まだ見つかっていません。</div>
+  return cur+`<h2>改善実験の記録</h2><p class="meta">モデルの作り方を決めたときの実験です（${orgName(L.org)}、${esc((L.updated_at||'').slice(0,10))}時点）。数値は当時のモデルのもので、使用中のモデルとは異なります。</p>
+  <div class="notice">市場を安定して上回るモデルと、回収率100%を超える買い方は、まだ見つかっていません。</div>
   <h2>封鎖テストの結果</h2><p class="meta">2026-03〜11の${F.new.n_races}レースを、設定を確定してから1回だけ評価しました。市場は確定オッズで、発走前の予測と同じ時点ではない参考値です。</p>
   <div class="card scroll"><table>${head}${row('現行',F.baseline,'基準')}${row('新モデル',F.new,F.adopted?'採用':'不採用')}${row('市場(確定オッズ)',F.market_reference_final_odds,'参考')}</table></div>
   <p class="meta">新モデルと現行のLog Loss差 ${fmtD(F.new.delta_log_loss)}（95%区間 ${fmtD(F.new.delta_ci_low)}〜${fmtD(F.new.delta_ci_high)}）</p>
@@ -228,25 +266,63 @@ lab(){const L=D.lab;if(!L)return '<div class="empty">改善実験の結果はま
   <h2>実験の記録</h2><details><summary>全${L.experiments.length}件を表示</summary><div class="card scroll"><table><tr><th>段階</th><th>名前</th><th>Log Loss</th><th>差</th><th>的中</th><th>回収率</th></tr>${L.experiments.map(x=>`<tr><td>${esc(x.stage)}${x.used_locked_test?' *':''}</td><td class="name">${esc(x.name)}</td><td>${x.log_loss==null?'-':(+x.log_loss).toFixed(4)}</td><td>${fmtD(x.delta_log_loss==null?null:+x.delta_log_loss)}</td><td>${pct0(x.top1_hit)}</td><td>${pct0(x.roi)}</td></tr>`).join('')}</table></div><p class="meta">* は封鎖テストを使った記録です。</p></details>`},
 status(){const d=D.data_status;const oq=d.odds_quality||[];const oqr=v=>v==null?'-':Math.round(v*100)+'%';return `${oq.length?`<h2>発走前オッズの取得状況</h2><div class="card scroll"><table><tr><th>日付</th><th>主催</th><th>レース</th><th>取得</th><th>30分前</th><th>10分前</th><th>直前</th><th>10分前の遅れ</th><th>エラー</th></tr>${oq.map(q=>`<tr><td>${q.race_date}</td><td>${q.org==='JRA'?'中央':'地方'}</td><td>${q.n_races}</td><td>${oqr(q.any_rate)}</td><td>${oqr(q.t30_rate)}</td><td>${oqr(q.t10_rate)}</td><td>${oqr(q.last_rate)}</td><td>${q.median_delay_t10_min==null?'-':q.median_delay_t10_min.toFixed(1)+'分'}</td><td>${q.n_errors}</td></tr>`).join('')}</table></div>`:''}<h2>蓄積データ</h2><div class="card scroll"><table><tr><th>主催</th><th>レース数</th><th>開始</th><th>最新</th></tr>${d.counts.map(c=>`<tr><td>${c.org==='JRA'?'中央':'地方'}</td><td>${c.races}</td><td>${c.first}</td><td>${c.last}</td></tr>`).join('')}</table></div>
   ${d.counts.some(c=>c.org==='NAR')?'':'<div class="notice">地方競馬のデータはまだありません。公式サイトから取得したZIPの取り込みが必要です。</div>'}
-  <h2>モデル</h2>${Object.values(D.models).map(m=>`<div class="card"><b>${m.org==='JRA'?'中央':'地方'}</b> <span class="meta">${esc(m.model_version_id)}</span><div class="meta">学習期間 ${esc(m.train_start)}〜${esc(m.train_end)}</div></div>`).join('')||'<div class="empty">未学習</div>'}
+  <h2>モデル</h2>${modelCards()}
   <h2>取得元</h2>${d.sources.filter(s=>s.enabled).map(s=>`<div class="card"><b>${esc(s.source)}</b> <span class="meta">自動取得${s.automated_fetch?'あり':'なし'} / ${esc(s.license_status)}</span><div class="meta">最終成功 ${esc(s.last_success_at||'-')}</div>${s.last_error?`<div class="flags"><span class="flag">${esc(s.last_error)}</span></div>`:''}</div>`).join('')}
   <p class="meta">直近7日の取得失敗 ${d.errors_7d} 件</p><button class="chip" id="forget">この端末の合言葉を消す</button>`},
 };
 function list(rows){return rows.length?`<div class="list2">${rows.map(p=>comboCard(p)).join('')}</div>`:'<div class="empty">該当するものはありません。</div>'}
 function noOdds(all){return `<div class="empty">${all.length?'オッズ未取得のため期待値はまだ計算できません。発売開始後に更新されます。':'対象のレースがありません。'}</div>`}
-function raceCard(r){const b=bestOf(r.id);return `<button class="card" data-race="${esc(r.id)}"><div class="top"><b>${r.time||'--:--'} ${esc(r.course)}${r.no}R</b>${started(r)?' <span class="meta">発走済</span>':''}<span class="meta">${esc(r.surface||'')}${r.distance||''}m ${r.n||'-'}頭</span></div>
-  <div class="names">${esc(r.name||r.class||'')} ${esc(r.grade||'')}</div>
-  ${b?`<div class="top" style="margin-top:6px"><span>${b.ev==null?'AI本命':b.ev>0?'推奨':'最上位'} <b>${esc(label(b.b))} ${esc(b.c)}</b></span>${evTxt(b)}</div><div class="stats"><div>AI確率<b>${pct(b.p)}</b></div><div>オッズ<b>${oddsTxt(b)}</b></div></div>`:'<div class="meta">枠順確定後に予測します。</div>'}</button>`}
-const grade=p=>p>=.25?'S':p>=.15?'A':p>=.08?'B':'C';
-function raceDetail(r){const ps=P[r.id];const win=ps.filter(p=>p.b==='win');const place={};ps.filter(p=>p.b==='place').forEach(p=>place[p.c]=p);
+function raceCard(r){const w=winOf(r.id),top=w[0],e=bestEv(r.id);
+  const head=`<div class="top"><b>${r.time||'--:--'} ${esc(r.course)}${r.no}R</b>${started(r)?' <span class="meta">発走済</span>':''}<span class="meta">${esc(r.surface||'')}${r.distance||''}m ${r.n||'-'}頭</span></div>
+  <div class="names">${esc(r.name||r.class||'')} ${esc(r.grade||'')}</div>`;
+  if(!top)return `<button class="card" data-race="${esc(r.id)}">${head}<div class="meta">枠順確定後に予測します。</div></button>`;
+  return `<button class="card" data-race="${esc(r.id)}">${head}
+  <div class="pick"><span><span class="mk">◎</span><b>${esc(top.c)} ${esc(horseName(r,top.c))}</b></span><span class="meta">勝率 ${pct(top.p)}${top.o?` ・ 単勝 ${num(top.o)}倍${top.pop?` ${top.pop}人気`:''}`:''}</span></div>
+  <div class="pick meta">${w.slice(1,3).map((p,i)=>`<span><span class="mk">${MARKS[i+1]}</span>${esc(p.c)} ${esc(horseName(r,p.c))} ${pct(p.p)}</span>`).join('')}</div>
+  ${e?`<div class="top" style="margin-top:4px"><span class="meta">期待値が最も高い買い目 ${esc(label(e.b))} ${esc(e.c)}${(e.f||[]).includes('長期回収率は未検証')?' <span class="tag">未検証</span>':''}</span>${evTxt(e)}</div>`:'<div class="meta" style="margin-top:4px">オッズ取得前のため、期待値はまだありません。</div>'}</button>`}
+function raceDetail(r){const ps=P[r.id],win=winOf(r.id),mk=markOf(r.id),place={};ps.filter(p=>p.b==='place').forEach(p=>place[p.c]=p);
   const bets=BET_ORDER.filter(b=>ps.some(p=>p.b===b));if(!bets.includes(S.detailBet))S.detailBet=bets[0]||'win';
-  const rows=ps.filter(p=>p.b===S.detailBet).sort((a,b)=>(b.ev??-9)-(a.ev??-9)||b.p-a.p).slice(0,40);
+  const rows=ps.filter(p=>p.b===S.detailBet).sort((a,b)=>S.dsort==='prob'?b.p-a.p:(b.ev??-9)-(a.ev??-9)||b.p-a.p).slice(0,40);
   const hs=[...r.horses].sort((a,b)=>(win.find(p=>p.c==b.u)?.p||0)-(win.find(p=>p.c==a.u)?.p||0));
-  return `<button class="back" data-back="1">‹ レース一覧</button><h2>${raceLabel(r)} ${esc(r.name||'')} ${esc(r.grade||'')}</h2>
-  <p class="meta">${esc(r.surface||'')}${r.distance||''}m ${esc(r.going||'')} ${esc(r.weather||'')} ${r.n||'-'}頭 ${esc(r.class||'')}</p>
-  ${win.length?`<div class="card scroll"><table><tr><th>馬</th><th>単勝</th><th>勝率</th><th>複勝</th><th>評価</th><th>期待値</th></tr>${hs.map(h=>{const p=win.find(x=>x.c==h.u)||{};const pl=place[h.u]||{};return `<tr><td class="name"><b>${h.u}</b> ${esc(h.name)}<div class="meta">${esc(h.jockey||'')} ${h.cw!=null?h.cw+'kg':''}</div></td><td>${num(p.o)}${p.pop?`<div class="meta">${p.pop}人気</div>`:''}</td><td>${pct(p.p)}</td><td>${pct(pl.p)}</td><td>${p.p!=null?grade(p.p):'-'}</td><td>${p.ev==null?'未取得':sign(p.ev)}</td></tr>`}).join('')}</table></div>
-  <p class="meta">評価はAI勝率の目安です（S 25%以上、A 15%以上、B 8%以上、C それ未満）。</p>
-  <h2>券種別ランキング</h2>${chips('dbet',S.detailBet,bets.map(b=>[b,label(b)]))}<div class="list2">${rows.map(p=>comboCard(p,{noRace:true})).join('')}</div>`:'<div class="notice">枠順確定後に予測します。</div>'}`}
+  const head=`<button class="back" data-back="1">‹ レース一覧</button><h2>${raceLabel(r)} ${esc(r.name||'')} ${esc(r.grade||'')}</h2>
+  <p class="meta">${esc(r.surface||'')}${r.distance||''}m ${esc(r.going||'')} ${esc(r.weather||'')} ${r.n||'-'}頭 ${esc(r.class||'')}</p>`;
+  if(!win.length)return head+'<div class="notice">枠順確定後に予測します。</div>';
+  // 券種ごとに最も当たりやすい買い目
+  const likely=['win','place','quinella','wide','exacta','trio','trifecta'].filter(b=>ps.some(p=>p.b===b)).map(b=>ps.filter(p=>p.b===b).sort((x,y)=>y.p-x.p)[0]);
+  const hasOdds=ps.some(p=>p.ev!=null),nPos=ps.filter(p=>p.ev!=null&&p.ev>0).length;
+  const evNote=!hasOdds?'オッズ取得前のため、期待値はまだありません。':!nPos?'期待値がプラスの買い目はありません。'
+    :`期待値がプラスの買い目は ${nPos}点です。${sureRows().length?'':'ただし、期待値プラスの買い目を過去に買い続けても、回収率は100%を確実には超えていません。'}`;
+  return head+`<section class="card"><h3>このレースの見立て</h3>
+  <div class="pick">${win.slice(0,3).map((p,i)=>`<span><span class="mk">${MARKS[i]}</span><b>${esc(p.c)}</b> ${esc(horseName(r,p.c))} <span class="meta">${pct(p.p)}</span></span>`).join('')}</div>
+  <div class="meta" style="margin-top:10px">券種ごとに最も当たりやすい買い目</div>
+  <div class="scroll"><table><tr><th>券種</th><th>買い目</th><th>的中確率</th><th>オッズ</th><th>期待値</th></tr>${likely.map(p=>`<tr><td>${esc(label(p.b))}</td><td>${esc(p.c)}</td><td>${pct(p.p)}</td><td>${oddsTxt(p)}</td><td>${p.ev==null?'-':sign(p.ev)}</td></tr>`).join('')}</table></div>
+  <p class="meta">${evNote}</p></section>
+  <h2>出走馬</h2><div class="card scroll"><table><tr><th>印</th><th class="l">馬</th><th>単勝</th><th>勝率</th><th>複勝率</th><th>期待値</th></tr>${hs.map(h=>{const p=win.find(x=>x.c==h.u)||{};const pl=place[h.u]||{};return `<tr><td><span class="mk">${mk[h.u]||''}</span></td><td class="name"><b>${h.u}</b> ${esc(h.name)}<div class="meta">${esc(h.jockey||'')} ${h.cw!=null?h.cw+'kg':''}</div></td><td>${num(p.o)}${p.pop?`<div class="meta">${p.pop}人気</div>`:''}</td><td>${pct(p.p)}</td><td>${pct(pl.p)}</td><td>${p.ev==null?'未取得':sign(p.ev)}</td></tr>`}).join('')}</table></div>
+  <p class="meta">勝率の高い順に並べています。期待値は単勝のものです。</p>
+  <h2>券種別の買い目</h2>${chips('dbet',S.detailBet,bets.map(b=>[b,label(b)]))}${chips('dsort',S.dsort,[['prob','当たりやすい順'],['ev','期待値順']])}<div class="list2">${rows.map(p=>comboCard(p,{noRace:true})).join('')}</div>`+glossary()}
+function modelCards(){const ms=Object.values(D.models).sort((a,b)=>a.org.localeCompare(b.org));if(!ms.length)return '<div class="empty">未学習</div>';
+  return ms.map(m=>{let x={};try{x=JSON.parse(m.metrics||'{}')}catch(e){}const trees=(x.refit_rounds||[]).length?x.refit_rounds:(x.best_rounds||[]);
+    const mo=(D.market_only_orgs||[]).includes(m.org);
+    return `<div class="card"><b>${orgName(m.org)}</b><table class="kv"><tr><td>採用</td><td>${fmtAt(m.adopted_at)}</td></tr><tr><td>版</td><td>${esc(m.model_version_id)}</td></tr>
+    <tr><td>学習期間</td><td>${esc(m.train_start)}〜${esc(m.train_end)}</td></tr><tr><td>学習レース数</td><td>${x.n_train_races!=null?x.n_train_races.toLocaleString():'-'}</td></tr>
+    <tr><td>木の本数</td><td>${trees.length?trees.join(' / '):'-'}</td></tr><tr><td>オッズが揃った後</td><td>${mo?'単勝オッズだけで確率を出す':'AIと単勝オッズを合成'}</td></tr></table></div>`}).join('')}
+function roiView(){const orgs=Object.keys(D.backtests);if(!orgs.length)return '<div class="empty">検証結果はまだありません。</div>';
+  if(!orgs.includes(S.aorg))S.aorg=orgs[0];const b=D.backtests[S.aorg];
+  const up=t=>Math.round((+t-1)*100);
+  const how=r=>r.strategy==='top1'?'毎レース、最も当たりやすい買い目':r.strategy==='favorite_benchmark'?'1番人気（比較用）'
+    :r.strategy.startsWith('blend_ev_')?`期待値+${up(r.strategy.slice(9))}%以上（合成確率）`:`期待値+${up(r.strategy.slice(3))}%以上（AI単独）`;
+  const basis=r=>({final_optimistic:'確定(甘め)',cutoff:'発走前',none:'不使用',benchmark:'確定'})[r.odds_basis]||r.odds_basis;
+  const verdict=r=>r.n_bets>=500&&(r.roi_ci_low||0)>1?'<span class="tag pos">100%超</span>':r.roi>1?'<span class="tag">偶然と区別できない</span>':'<span class="tag">100%未満</span>';
+  const p0=v=>v==null?'-':Math.round(v*100)+'%';
+  const table=rs=>`<div class="list2">${rs.map(r=>`<div class="card"><div class="top"><b>${esc(label(r.bet_type))}</b>${verdict(r)}</div><div class="names">${how(r)}</div>
+    <div class="stats"><div>回収率<b>${pct0(r.roi)}</b></div><div>95%区間<b>${r.roi_ci_low==null?'-':Math.round(r.roi_ci_low*100)}〜${p0(r.roi_ci_high)}</b></div><div>点数<b>${r.n_bets.toLocaleString()}</b></div><div>判定のオッズ<b>${basis(r)}</b></div></div></div>`).join('')}</div>`;
+  const all=[...b.rows].sort((x,y)=>y.roi-x.roi),main=all.filter(r=>r.n_bets>=100),sure=all.filter(r=>r.n_bets>=500&&(r.roi_ci_low||0)>1);
+  return (orgs.length>1?chips('aorg',S.aorg,orgs.map(o=>[o,orgName(o)])):'')
+  +(sure.length?`<div class="notice">回収率100%を超えたと言える買い方が ${sure.length}件あります。過去の成績で、将来の利益は保証されません。</div>`:'<div class="notice">回収率100%を確実に超える買い方は、まだ見つかっていません。</div>')
+  +`<p class="meta">過去のデータだけで学習したAIで、その後のレース（${esc(b.period[0])}〜${esc(b.period[1])}、${b.summary.n_races.toLocaleString()}レース）を予測し、1点100円で買った計算です。「100%超」は、500点以上で95%区間の下限が100%を超えたものです。回収率が100%を超えていても、区間が100%をまたぐものは偶然と区別できません。</p>
+  <p class="meta">複数の券種を組み合わせても、回収率はそれぞれの回収率を購入額で平均した値になります。100%を確実に超える券種がない限り、組み合わせても超えません。</p>
+  <p class="meta">「判定のオッズ」は、買うかどうかを決めるのに使ったオッズです。「確定(甘め)」は締め切り後の最終オッズを見て決めた計算で、実際には不可能な判断を含むため良く出ます。「不使用」はオッズを見ずに決めています。</p>
+  <h2>回収率の高い順（100点以上）</h2>${table(main.slice(0,12))}<details><summary>すべての買い方 ${all.length}件（100点未満を含む）</summary>${table(all)}</details>`}
 function strategyTable(rows){const name={none:'オッズ不使用',final_optimistic:'確定オッズ(甘め)',cutoff:'発走前オッズ',benchmark:'基準'};const st=s=>s==='top1'?'確率最上位':s==='favorite_benchmark'?'確定1番人気':s.startsWith('blend_')?'合成 期待値'+s.replace('blend_ev_','')+'倍以上':'AI単独 期待値'+s.replace('ev_','')+'倍以上';
   const sorted=[...rows].sort((x,y)=>BET_ORDER.indexOf(x.bet_type)-BET_ORDER.indexOf(y.bet_type)||x.strategy.localeCompare(y.strategy));
   return `<div class="card scroll"><table><tr><th>券種</th><th>戦略</th><th>判定</th><th>点数</th><th>的中</th><th>回収率</th><th>95%区間</th><th>DD</th></tr>${sorted.map(r=>`<tr><td>${esc(label(r.bet_type))}</td><td>${st(r.strategy)}</td><td>${name[r.odds_basis]||esc(r.odds_basis)}</td><td>${r.n_bets}</td><td>${r.n_hits}</td><td>${pct0(r.roi)}</td><td>${pct0(r.roi_ci_low)}〜${pct0(r.roi_ci_high)}</td><td>${Math.round(r.max_drawdown||0).toLocaleString()}</td></tr>`).join('')}</table></div>`}
@@ -284,12 +360,11 @@ function bindCharts(){document.querySelectorAll('.chart').forEach(el=>{const pts
   svg.addEventListener('pointermove',show);svg.addEventListener('pointerdown',show);svg.addEventListener('pointerleave',()=>tip.style.display='none')})}
 function render(){
   document.querySelectorAll('#tabs button').forEach(b=>b.dataset.tab===S.tab?b.setAttribute('aria-current','page'):b.removeAttribute('aria-current'));
-  document.querySelectorAll('#org button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.org===S.org));
-  const ds=[...new Set(D.races.filter(orgOk).map(r=>r.date))].sort();if(S.date&&!ds.includes(S.date))S.date=ds.includes(D.today)?D.today:(ds[0]||null);
+  const ds=[...new Set(D.races.map(r=>r.date))].sort();if(S.date&&!ds.includes(S.date))S.date=ds.includes(D.today)?D.today:(ds[0]||null);
   $('#main').innerHTML=VIEWS[S.tab]();bindCharts();
 }
 document.addEventListener('click',e=>{const t=e.target.closest('button');if(!t)return;const d=t.dataset;
-  if(d.tab){S.race=null;go('#'+d.tab)}else if(d.org){S.org=d.org;render()}else if(d.date){S.date=d.date;render()}else if(d.rank){S.rank=d.rank;render()}else if(d.bet){S.bet=d.bet;render()}else if(d.dbet){S.detailBet=d.dbet;render()}else if(d.aorg){S.aorg=d.aorg;render()}else if(d.race){go('#race/'+encodeURIComponent(d.race))}else if(d.back){go('#races')}else if(t.id==='forget'){store('keiba-pw');t.textContent='消しました'}});
+  if(d.tab){S.race=null;go('#'+d.tab)}else if(d.rsort){S.rsort=d.rsort;render()}else if(d.dsort){S.dsort=d.dsort;render()}else if(d.rrank){S.rrank=d.rrank;render()}else if(d.date){S.date=d.date;render()}else if(d.rank){S.rank=d.rank;render()}else if(d.bet){S.bet=d.bet;render()}else if(d.dbet){S.detailBet=d.dbet;render()}else if(d.aorg){S.aorg=d.aorg;render()}else if(d.race){go('#race/'+encodeURIComponent(d.race))}else if(d.back){go('#races')}else if(t.id==='forget'){store('keiba-pw');t.textContent='消しました'}});
 const saved=load('keiba-pw');if(saved)unlock(saved,true);
 </script>
 </body>
