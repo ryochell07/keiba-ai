@@ -72,6 +72,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("jra-update", help="直近の結果を取得")
     p.add_argument("--days", type=int, default=10)
     p.add_argument("--all-odds-days", type=int, default=0)
+    sub.add_parser("jra-results", help="当日の確定したレースの結果を取得 (未取得のレースがなければ要求しない)")
     sub.add_parser("jra-cards", help="公開中の出馬表を取得")
     sub.add_parser("jra-odds", help="発売中のオッズを取得時刻付きで保存")
     p = sub.add_parser("nar-import", help="手動DLした公式ZIPを取り込む")
@@ -115,6 +116,11 @@ def main(argv=None) -> int:
         elif args.cmd == "jra-update":
             print(_jra(con, sources).update_results(con, args.days, args.all_odds_days))
             _record(con, "jra", True)
+        elif args.cmd == "jra-results":
+            out = _jra(con, sources).update_today_results(con)
+            print(out)
+            if out["pending"]:
+                _record(con, "jra", True)
         elif args.cmd == "jra-cards":
             print(_jra(con, sources).fetch_racecards(con))
             _record(con, "jra", True)

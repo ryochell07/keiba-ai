@@ -38,6 +38,14 @@ jobs:
             exit "$rc"
           fi
           [ "$rc" = "0" ] || echo "::warning::発走前オッズの取得で失敗がありました (終了コード $rc)"
+          # 中央の当日の結果。発走から10分たって結果のないレースがなければ公式サイトへ要求しない
+          rc=0
+          .venv/bin/keiba jra-results || rc=$?
+          if [ "$rc" = "4" ] || [ "$rc" = "5" ]; then
+            echo "::error::整合性または環境の問題で停止しました (終了コード $rc)"
+            exit "$rc"
+          fi
+          [ "$rc" = "0" ] || echo "::warning::中央の当日の結果の取得に失敗しました (終了コード $rc)"
           .venv/bin/keiba daily --no-fetch
       - uses: ./.github/actions/push-state
         if: success() || failure()
