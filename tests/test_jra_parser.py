@@ -28,6 +28,50 @@ def test_レース結果の解析():
     assert {(p.bet_type, p.combo) for p in r.payouts} == {("win", "3"), ("quinella", "3-10"), ("trifecta", "17-10-3")}
 
 
+def test_当日の結果は確定したレースだけ取りに行く(tmp_path, monkeypatch):
+    """発走から10分たって結果のないレースがあるときだけ、レース結果ページ→当日の一覧→結果ページの順にたどる。"""
+    from datetime import datetime
+    from keiba_ai import config
+    from keiba_ai.db import JST, connect
+    from keiba_ai.ingest import save_race
+    from keiba_ai.providers.base import EntryRec, RaceRec
+    from keiba_ai.providers.jra import RESULT_TOP, JraProvider
+    monkeypatch.setattr(config, "RAW", tmp_path / "raw")
+    con = connect(tmp_path / "k.db")
+    for no, post in ((11, "15:25"), (12, "16:00")):
+        race = RaceRec(org="JRA", course_code="06", course_name="中山", race_date="2026-01-10", race_no=no, source="jra", post_time=post)
+        race.entries = [EntryRec(umaban=u, horse_id=f"J20201{no}{u:04d}", horse_name="テスト馬") for u in (3, 4)]
+        save_race(con, race)
+    con.commit()
+    today_day, past_day, result = "pw01srl00062026010120260110/AB", "pw01srl10062026010120260103/CD", "pw01sde1006202601011120260110/41"
+    pages = {RESULT_TOP: f'<a onclick="doAction(\'/JRADB/accessS.html\', \'{today_day}\')"></a><a>{past_day}</a>',
+             today_day: f"<a>{result}</a><a>pw01sde1006202601011220260110/42</a>", result: RESULT}
+    asked = []
+
+    class Client:
+        def fetch(self, url, data=None, ref=None):
+            asked.append(ref)
+            return pages[ref].encode("cp932")
+
+    jra = JraProvider(Client())
+    assert jra.update_today_results(con, now=datetime(2026, 1, 10, 15, 30, tzinfo=JST))["pending"] == 0
+    assert asked == []  # 発走から10分たっていなければ要求しない
+    # 払戻が載っていない結果ページは取り込まず、保存したページも使わずに次の実行で取り直す
+    pages[result] = RESULT.split('<div class="refund_area">')[0] + "</div>"
+    assert jra.update_today_results(con, now=datetime(2026, 1, 10, 15, 35, tzinfo=JST))["races"] == 0
+    assert con.execute("SELECT COUNT(*) FROM result WHERE race_id='J202601100611'").fetchone()[0] == 0
+    pages[result] = RESULT
+    asked.clear()
+    out = jra.update_today_results(con, now=datetime(2026, 1, 10, 15, 40, tzinfo=JST))
+    assert (out["pending"], out["races"]) == (1, 1)
+    assert asked == [RESULT_TOP, today_day, result]  # 過去の日の一覧と、まだ発走前の12Rは取りに行かない
+    assert con.execute("SELECT umaban FROM result WHERE race_id='J202601100611' AND finish_pos=1").fetchone()[0] == 3
+    assert con.execute("SELECT COUNT(*) FROM payout WHERE race_id='J202601100611'").fetchone()[0] == 3
+    asked.clear()
+    assert jra.update_today_results(con, now=datetime(2026, 1, 10, 15, 50, tzinfo=JST))["pending"] == 0
+    assert asked == []  # 取り込み済みなら要求しない
+
+
 def test_オッズの解析():
     html = f"""<div id="contentsBody"><div class="race_header">最終オッズ</div>
     <table class="tanpuku"><tr><td class="num">1</td><td class="odds_tan"><strong>2.3</strong></td><td class="odds_fuku"><span class="min">1.1</span><span class="max">1.3</span></td></tr>

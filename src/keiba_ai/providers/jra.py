@@ -52,8 +52,8 @@ class JraProvider(Provider):
     def _post(self, page: str, cname: str) -> bytes:
         return self.client.fetch(f"{BASE}/{page}", data={"cname": cname}, ref=cname)
 
-    def _get_result(self, cname: str) -> bytes:
-        cached = load_raw("jra", cname)
+    def _get_result(self, cname: str, use_cache: bool = True) -> bytes:
+        cached = load_raw("jra", cname) if use_cache else None
         if cached:
             return cached
         content = self.client.fetch(f"{BASE}/accessS.html?CNAME={cname}", ref=cname)
@@ -97,7 +97,7 @@ class JraProvider(Provider):
             log.info("%d-%02d 完了 %s", *ym, stats)
         return stats
 
-    def _ingest_past_race(self, con, cname: str, all_odds_since: str | None, stats: dict) -> None:
+    def _ingest_past_race(self, con, cname: str, all_odds_since: str | None, stats: dict, same_day: bool = False) -> None:
         rid = race_id_from_cname(cname)
         rdate = race_date_from_cname(cname)
         want_all = bool(all_odds_since and rdate and rdate >= all_odds_since)
@@ -108,8 +108,11 @@ class JraProvider(Provider):
             stats["skipped"] += 1
             return
         try:
-            content = self._get_result(cname)
+            # 当日は保存済みのページを使わず、単勝の払戻が出ていなければ取り込まずに次の実行で取り直す
+            content = self._get_result(cname, use_cache=not same_day)
             race = P.parse_result(content, cname)
+            if same_day and not any(p.bet_type == "win" for p in race.payouts):
+                raise ValueError("払戻が未確定")
             stats["warnings"] += len(save_race(con, race))
             links = P.links(content, "pw151ou")
             own = [c for c in links if race_id_from_cname(c) == race.race_id]
@@ -151,6 +154,30 @@ class JraProvider(Provider):
                 d = race_date_from_cname(cname)
                 if d and d >= since:
                     self._ingest_past_race(con, cname, odds_since, stats)
+        return stats
+
+    def update_today_results(self, con, settle_min: int = 10, now: datetime | None = None) -> dict:
+        """当日のレースで、発走から settle_min 分たっても結果がないものを「レース結果」ページからたどって取り込む。
+        該当するレースがなければ公式サイトへ要求しない。取り込んだレースは翌朝の update_results で飛ばされる。"""
+        stats = {"races": 0, "skipped": 0, "failed": 0, "odds": 0, "warnings": 0, "pending": 0}
+        now = now or datetime.now(JST)
+        today = now.date().isoformat()
+        pending = {r[0] for r in con.execute(
+            """SELECT race_id FROM race r WHERE org='JRA' AND race_date=? AND post_time IS NOT NULL AND post_time<=?
+               AND NOT EXISTS (SELECT 1 FROM result x WHERE x.race_id=r.race_id AND x.finish_pos=1)""",
+            (today, (now - timedelta(minutes=settle_min)).strftime("%H:%M")))}
+        stats["pending"] = len(pending)
+        if not pending:
+            return stats
+        top = self._post("accessS.html", RESULT_TOP)
+        found = P.links(top, "pw01sde")
+        for day in P.links(top, "pw01srl"):
+            if race_date_from_srl(day) == today:
+                found += P.links(self._post("accessS.html", day), "pw01sde")
+        # 同じレースへのリンクが複数あれば1つだけ使う
+        cnames = {race_id_from_cname(c): c for c in sorted(found) if race_id_from_cname(c) in pending}
+        for cname in cnames.values():
+            self._ingest_past_race(con, cname, None, stats, same_day=True)
         return stats
 
     def fetch_racecards(self, con) -> dict:
