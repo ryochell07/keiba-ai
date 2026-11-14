@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -19,6 +19,8 @@ from .ev import TAKEOUT, label
 
 PBKDF2_ITER = 310_000
 TOP_N = 200
+RESULT_DAYS = 7                     # レースタブで結果と答え合わせを見られる過去の日数
+VOID = ("scratched", "excluded")    # 取消・除外の馬を含む買い目は返還される
 
 
 def encrypt_payload(payload: dict, passphrase: str) -> dict:
@@ -35,11 +37,29 @@ def _lab_summary() -> dict | None:
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
 
 
+def ev_check(rows: list[dict], pay: dict[tuple[str, str], int], void: set[int]) -> dict:
+    """発走前に期待値プラスだった買い目を、1点100円ずつ買った結果。取消・除外の馬を含む買い目は返還なので数えない。"""
+    out = {"odds": any(p.get("ev") is not None for p in rows), "n": 0, "ret": 0, "void": 0, "hits": []}
+    for p in rows:
+        if p.get("ev") is None or p["ev"] <= 0:
+            continue
+        if not p["b"].startswith("bracket") and void & {int(u) for u in p["c"].split("-")}:
+            out["void"] += 1
+            continue
+        out["n"] += 1
+        amount = pay.get((p["b"], p["c"]))
+        if amount:
+            out["ret"] += amount
+            out["hits"].append({"b": p["b"], "c": p["c"], "a": amount})
+    return out
+
+
 def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
     today = today or datetime.now(JST).date().isoformat()
+    since = (date.fromisoformat(today) - timedelta(days=RESULT_DAYS)).isoformat()
     races = {}
     for r in con.execute("""SELECT r.*, c.name AS course FROM race r JOIN racecourse c USING(course_code)
-                            WHERE r.race_date>=? AND r.course_code NOT LIKE 'N帯広%' ORDER BY r.race_date, r.post_time, r.race_no""", (today,)):
+                            WHERE r.race_date>=? AND r.course_code NOT LIKE 'N帯広%' ORDER BY r.race_date, r.post_time, r.race_no""", (since,)):
         races[r["race_id"]] = {"id": r["race_id"], "org": r["org"], "date": r["race_date"], "course": r["course"], "no": r["race_no"],
                                "time": r["post_time"], "name": r["name"], "grade": r["grade"], "class": r["class_name"],
                                "surface": r["surface"], "distance": r["distance"], "going": r["going"], "weather": r["weather"],
@@ -55,19 +75,46 @@ def collect(con: sqlite3.Connection, today: str | None = None) -> dict:
                    "cw": e["carried_weight"], "bw": e["body_weight"], "bd": e["body_weight_diff"]}
             races[e["race_id"]]["horses"].append(row)
             names[(e["race_id"], e["umaban"])] = row
+        for x in con.execute(f"SELECT race_id,umaban,finish_pos,status,popularity_final FROM result WHERE race_id IN ({marks})", ids):
+            row = {"u": x["umaban"], "f": x["finish_pos"], "st": None if x["status"] == "finished" else x["status"], "pop": x["popularity_final"]}
+            races[x["race_id"]].setdefault("res", []).append({k: v for k, v in row.items() if v is not None})
+        for x in con.execute(f"SELECT race_id,bet_type,combo,amount FROM payout WHERE race_id IN ({marks}) ORDER BY race_id,bet_type,amount", ids):
+            races[x["race_id"]].setdefault("pay", []).append({"b": x["bet_type"], "c": x["combo"], "a": x["amount"]})
     models = {r["org"]: dict(r) for r in con.execute(
         "SELECT model_version_id,org,adopted_at,created_at,train_start,train_end,metrics,comparison FROM model_version WHERE status='active'")}
-    preds = []
+    by_race_all: dict[str, list[dict]] = {}
+    # 払戻が出たレースは、発走前に表示した予測を版にかかわらずそのまま答え合わせに使う。発走後に作られた予測は使わない
+    posts = {rid: datetime.fromisoformat(f"{r['date']}T{r['time']}:00+09:00") for rid, r in races.items() if "pay" in r and r["time"]}
     if races:
-        for p in con.execute(f"""SELECT p.* FROM prediction_display p JOIN model_version m USING(model_version_id)
-                                 WHERE p.race_id IN ({marks}) AND m.status='active'""", ids):
+        for p in con.execute(f"""SELECT p.*, m.status AS model_status FROM prediction_display p JOIN model_version m USING(model_version_id)
+                                 WHERE p.race_id IN ({marks})""", ids):
+            rid = p["race_id"]
+            if "pay" in races[rid]:
+                if rid in posts and datetime.fromisoformat(p["predicted_at"]) >= posts[rid]:
+                    continue
+            elif p["model_status"] != "active":
+                continue
             meta = json.loads(p["flags"] or "{}")
             row = {"r": p["race_id"], "b": p["bet_type"], "c": p["combo"], "p": round(p["prob"], 6), "s": p["prob_std"] and round(p["prob_std"], 6),
                    "o": p["odds"], "m": p["odds_max"], "t": p["odds_captured_at"], "ev": p["ev"] if p["ev"] is None else round(p["ev"], 4),
                    "evm": p["ev_max"] if p["ev_max"] is None else round(p["ev_max"], 4), "st": p["status"], "at": p["predicted_at"],
                    "f": meta.get("flags") or None, "cf": meta.get("confidence"), "n": meta.get("avg_runs"),
                    "rp": meta.get("raw_p"), "bl": 1 if meta.get("blended") else None}
-            preds.append({k: v for k, v in row.items() if v is not None})
+            by_race_all.setdefault(p["race_id"], []).append({k: v for k, v in row.items() if v is not None})
+    preds = []
+    for rid, rows in by_race_all.items():
+        r = races[rid]
+        if "pay" in r:
+            void = {x["u"] for x in r.get("res", []) if x.get("st") in VOID}
+            r["chk"] = ev_check(rows, {(x["b"], x["c"]): x["a"] for x in r["pay"]}, void)
+        if r["date"] < today:
+            # 過去の日は、印に使う単勝・複勝と、券種ごとに最も当たりやすい買い目だけを載せてデータ量を抑える
+            top: dict[str, dict] = {}
+            for x in rows:
+                if x["b"] not in top or x["p"] > top[x["b"]]["p"]:
+                    top[x["b"]] = x
+            rows = [x for x in rows if x["b"] in ("win", "place") or top[x["b"]] is x]
+        preds.extend(rows)
     # 市場との乖離は単勝について計算する: AI勝率 − オッズ逆数を正規化した市場確率
     by_race: dict[str, list[dict]] = {}
     for p in preds:

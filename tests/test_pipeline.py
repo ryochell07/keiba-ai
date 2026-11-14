@@ -2,6 +2,7 @@
 import base64
 import gzip
 import json
+from datetime import date, timedelta
 
 import numpy as np
 import pytest
@@ -114,6 +115,41 @@ def test_暗号化ページ(world, monkeypatch, tmp_path):
     assert plain["market_only_orgs"] == []
     monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
     assert collect(con, "2030-01-01")["market_only_orgs"] == ["JRA"]
+
+
+def test_結果と答え合わせ(world):
+    """過去の日は結果と払戻を載せ、予測は単勝・複勝と券種ごとの最上位だけに絞る。期待値プラスの買い目は返還を除いて集計する。"""
+    con, _ = world
+    rid, day = con.execute("SELECT race_id,race_date FROM race WHERE race_date<'2030-01-01' ORDER BY race_date DESC, race_no LIMIT 1").fetchone()
+    fin = dict(con.execute("SELECT umaban,finish_pos FROM result WHERE race_id=?", (rid,)).fetchall())
+    first, second, last = (next(u for u, f in fin.items() if f == k) for k in (1, 2, max(fin.values())))
+    quinella = "-".join(map(str, sorted((first, second))))
+    mid = con.execute("SELECT model_version_id FROM model_version WHERE status='active'").fetchone()[0]
+    rows = [("win", str(first), .40, .2), ("win", str(second), .30, .5), ("win", str(last), .01, 1.0), ("place", str(first), .70, None),
+            ("quinella", quinella, .10, .3), ("quinella", f"{min(first, last)}-{max(first, last)}", .02, 2.0)]
+    try:
+        con.execute("UPDATE result SET status='scratched', finish_pos=NULL WHERE race_id=? AND umaban=?", (rid, last))
+        con.executemany("INSERT INTO prediction_display(race_id,bet_type,combo,model_version_id,predicted_at,prob,ev) VALUES (?,?,?,?,?,?,?)",
+                        [(rid, b, c, mid, f"{day}T14:50:00+09:00", p, ev) for b, c, p, ev in rows])
+        # 発走 (15:00) 後に作られた予測は、答え合わせにもページにも使わない
+        con.execute("INSERT INTO prediction_display(race_id,bet_type,combo,model_version_id,predicted_at,prob,ev) VALUES (?,?,?,?,?,?,?)",
+                    (rid, "exacta", f"{first}-{second}", mid, f"{day}T15:30:00+09:00", .5, 3.0))
+        next_day = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+        out = collect(con, next_day)
+        race = next(r for r in out["races"] if r["id"] == rid)
+        assert {"u": first, "f": 1, "pop": first} in race["res"] and {"b": "win", "c": str(first), "a": 500} in race["pay"]
+        assert next(x for x in race["res"] if x["u"] == last)["st"] == "scratched"
+        # 単勝の勝ち馬と馬連が的中。取り消した馬を含む2点は返還
+        chk = race["chk"]
+        assert (chk["odds"], chk["n"], chk["ret"], chk["void"]) == (True, 3, 2000, 2)
+        assert sorted(chk["hits"], key=lambda x: x["b"]) == [{"b": "quinella", "c": quinella, "a": 1500}, {"b": "win", "c": str(first), "a": 500}]
+        kept = {(p["b"], p["c"]) for p in out["predictions"] if p["r"] == rid}
+        assert kept == {("win", str(first)), ("win", str(second)), ("win", str(last)), ("place", str(first)), ("quinella", quinella)}
+        assert all(r["date"] >= (date.fromisoformat(next_day) - timedelta(days=7)).isoformat() for r in out["races"])
+        # 当日のレースは絞らない
+        assert len([p for p in collect(con, day)["predictions"] if p["r"] == rid]) == len(rows)
+    finally:
+        con.rollback()
 
 
 def test_暗号文は合言葉なしで読めない():
