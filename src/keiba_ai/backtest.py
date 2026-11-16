@@ -70,18 +70,39 @@ def _final_odds(con, org: str) -> dict[tuple[str, str, str], tuple[float, float 
     return out
 
 
-def _cutoff_odds(con, org: str, cutoff_min: int = 10) -> dict[tuple[str, str, str], tuple[float, float | None]]:
-    """発走 cutoff 分前までの最後のスナップショットのみ。"""
+def _cutoff_odds(con, org: str, cutoff_min: int = 10, max_age_min: int = 60) -> dict[tuple[str, str, str], tuple[float, float | None]]:
+    """発走 cutoff 分前までに取得された、一定時間以内の非確定オッズのみ。
+
+    これは過去の参考用評価であって、実際の購入価格を保証しない。
+    異なるUTCオフセットを文字列順で比較せず、発走基準の実時刻と照合する。
+    """
+    from datetime import datetime
+    from .db import JST
+
     rows = con.execute(
-        """SELECT o.race_id,o.bet_type,o.combo,o.odds,o.odds_max,o.captured_at,r.race_date,r.post_time
+        """SELECT o.race_id,o.bet_type,o.combo,o.odds,o.odds_max,o.captured_at,
+                  r.race_date,r.post_time
            FROM odds_snapshot o JOIN race r USING(race_id)
-           WHERE o.is_final=0 AND o.captured_at<>'final' AND r.org=? AND r.post_time IS NOT NULL
-           ORDER BY o.captured_at""", (org,)).fetchall()
+           WHERE o.is_final=0 AND o.captured_at<>'final'
+             AND r.org=? AND r.post_time IS NOT NULL
+           ORDER BY julianday(o.captured_at), o.rowid""", (org,)).fetchall()
     out = {}
     for r in rows:
-        limit = pd.Timestamp(f"{r['race_date']} {r['post_time']}") - pd.Timedelta(minutes=cutoff_min)
-        if pd.Timestamp(r["captured_at"]).tz_localize(None) <= limit:
-            out[(r[0], r[1], r[2])] = (r[3], r[4])
+        try:
+            captured = datetime.fromisoformat(r["captured_at"])
+            if captured.tzinfo is None or captured.utcoffset() is None:
+                continue
+            post = datetime.fromisoformat(f"{r['race_date']}T{r['post_time']}").replace(tzinfo=JST)
+            cutoff = post - timedelta(minutes=cutoff_min)
+            age = (cutoff - captured).total_seconds() / 60
+            price = r["odds"]
+            if price is None or not np.isfinite(price) or price <= 0:
+                continue
+            if not 0 <= age <= max_age_min:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        out[(r["race_id"], r["bet_type"], r["combo"])] = (float(price), r["odds_max"])
     return out
 
 
