@@ -91,3 +91,26 @@ def test_promotion_rejects_insufficient_brier_cluster_evidence():
     assert out["candidate_minus_deployed_ci95"] is None
     assert out["promotion_gate"]["checks"]["brier_cluster_ci_not_worse"] is False
     assert out["promotion_gate"]["eligible_for_review"] is False
+
+
+def test_brier_aware_shadow_keeps_training_strictly_before_test_day():
+    training = [_record(d, r) for d in (1, 2) for r in range(25)]
+    test_day = [_record(3, r, ai_winner=0.1, market_winner=0.9)
+                for r in range(25)]
+    old = walk_forward_blend(training, min_history=50)
+    new = walk_forward_blend(training + test_day, min_history=50,
+                             brier_weight=0.25)
+    assert old["forward_test_races"] == 0
+    assert new["forward_test_races"] == 25
+    assert new["optimization_brier_weight"] == 0.25
+    assert new["mean_ai_weight"] == pytest.approx(1.0)
+    assert new["scores_on_same_forward_test_races"]["candidate"]["log_loss"] > 2
+
+
+def test_brier_aware_shadow_rejects_invalid_objective_weight():
+    rows = [_record(1, 1)]
+    for invalid in (-1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="brier_weight"):
+            walk_forward_blend(rows, brier_weight=invalid)
+        with pytest.raises(ValueError, match="brier_weight"):
+            _best_alpha(rows, brier_weight=invalid)
