@@ -169,6 +169,14 @@ def _valid_prestart_run(run: sqlite3.Row) -> bool:
         return False
 
 
+def _chronological_prestart_runs(candidates: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    """異なるUTCオフセットでも、発走前の実時刻でレースごとに整列する。"""
+    return sorted(
+        (run for run in candidates if _valid_prestart_run(run)),
+        key=lambda run: (run["race_id"], datetime.fromisoformat(run["predicted_at"])),
+    )
+
+
 def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool:
     """保存された予測に対し、同時刻・発走前・十分新しい単勝オッズだけをEVに使う。"""
     if run["odds_status"] != "complete" or not run["odds_same_time"]:
@@ -193,7 +201,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
            ORDER BY p.race_id, p.predicted_at, p.rowid""", (org,)).fetchall()
     # 発走予定時刻の欠損や文字列のオフセット比較ミスを利用した、
     # 実際には発走後の予測を「事前予測」と見なす事故を防ぐ。
-    runs = [run for run in candidates if _valid_prestart_run(run)]
+    runs = _chronological_prestart_runs(candidates)
     invalid_prestart_runs = len(candidates) - len(runs)
     payouts: dict[tuple[str, str], dict[str, int]] = defaultdict(dict)
     if runs:
