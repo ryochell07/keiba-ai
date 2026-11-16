@@ -62,8 +62,10 @@ def _nar(con, sources):
 
 
 def _readonly_reconcile_database(args, path, *, immutable: bool = False) -> int:
-    """DBのスキーマ・本体・評価ファイルには書かず、集計結果だけを表示する。"""
+    """評価指標のみを取り出す。暗号化バックアップの場合は必ず安全なファイルへ保存。"""
+    import os
     import sqlite3
+    from pathlib import Path
     from .forward import reconcile
 
     uri = path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
@@ -73,13 +75,32 @@ def _readonly_reconcile_database(args, path, *, immutable: bool = False) -> int:
         orgs = [args.org] if args.org else [
             r[0] for r in con.execute("SELECT DISTINCT org FROM race ORDER BY org")
         ]
+        summaries = []
         for org in orgs:
             report = reconcile(con, org, persist=False, write_report=False)
-            # 公開Actionsログには出力しないこと。個別馬/個別レースの記録は表示しない。
             fields = ("org", "n_races", "n_races_with_selected_prestart_run",
                       "excluded_runs_without_verified_prestart_time",
                       "evaluation_coverage", "paired_model_comparison", "by_time_point")
-            print(json.dumps({k: report[k] for k in fields}, ensure_ascii=False, indent=1))
+            summaries.append({k: report[k] for k in fields})
+    payload = json.dumps(summaries[0] if len(summaries) == 1 else summaries,
+                         ensure_ascii=False, indent=1) + "\n"
+    if args.output:
+        dest = Path(args.output).expanduser()
+        # repo内に秘密の性能集計を誤コミットしない。シンボリックリンクを含む
+        # 保存先の実パスで検査し、既存ファイルは上書き不可。
+        resolved = dest.resolve()
+        if resolved.is_relative_to(config.ROOT.resolve()):
+            raise ValueError("評価結果を公開リポジトリ内へ保存することはできません")
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                out.write(payload)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
+    else:
+        # 非暗号化DBでの従来動作だけ標準出力を許可。
+        print(payload, end="")
     return 0
 
 
@@ -88,7 +109,6 @@ def _readonly_reconcile(args) -> int:
     if not args.encrypted_state:
         return _readonly_reconcile_database(args, config.DB_PATH)
 
-    from contextlib import contextmanager
     from pathlib import Path
     from tempfile import TemporaryDirectory
     from cryptography.exceptions import InvalidTag
@@ -157,6 +177,10 @@ def main(argv=None) -> int:
     sys.excepthook, warnings.showwarning = _public_excepthook, _public_warning
     if args.cmd == "reconcile" and args.encrypted_state and not args.read_only:
         ap.error("--encrypted-state は --read-only と併用してください")
+    if args.cmd == "reconcile" and args.encrypted_state and not args.output:
+        ap.error("--encrypted-state では --output に非公開ファイルの保存先を指定してください")
+    if args.cmd == "reconcile" and args.output and not args.read_only:
+        ap.error("--output は --read-only と併用してください")
     if args.cmd == "reconcile" and args.read_only:
         return _readonly_reconcile(args)
     config.ensure_dirs()
