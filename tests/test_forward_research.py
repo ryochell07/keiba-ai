@@ -233,3 +233,21 @@ def test_brier_optimizer_rejects_mismatching_runner_sets():
     record["market"] = {1: .2, 3: .8}
     with pytest.raises(ValueError, match="runner sets"):
         _best_alpha([record], brier_weight=.25)
+
+
+def test_promotion_requires_complete_payout_coverage():
+    # 未来側400レースあり予測は極めて良好。それでも勝ち馬の
+    # 払戻が1レース欠けたらROIによる採用判定は通さない。
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    rows[-1] = {**rows[-1], "payout": {}}
+    out = walk_forward_blend(rows, min_history=50, min_history_dates=2)
+    assert out["forward_test_races"] == 400
+    assert out["scores_on_same_forward_test_races"]["candidate"]["top1_roi_races"] == 399
+    assert out["promotion_gate"]["checks"]["complete_forward_payout_coverage"] is False
+    assert out["promotion_gate"]["eligible_for_review"] is False
+
+
+def test_promotion_full_payout_coverage_on_consistent_reference():
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    out = walk_forward_blend(rows, min_history=50, min_history_dates=2)
+    assert out["promotion_gate"]["checks"]["complete_forward_payout_coverage"] is True
