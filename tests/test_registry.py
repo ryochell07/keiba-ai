@@ -140,6 +140,19 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     assert by[("top1", "win")]["roi"] == 5.0
     assert by[("ev_1.0", "win")]["n_bets"] == 1  # 確率×オッズが1以上の馬だけ
     assert out["by_time_point"]["morning"]["ai"]["n_races"] == 1
+    counts = out["evaluation_coverage"]["by_time_point"]["morning"]
+    assert counts["paired_scored"] == 1
+    assert counts["odds_snapshot_mismatch"] == 0
+    # 元オッズ履歴と台帳が食い違えば、市場比較・購入可能EVから除外する
+    con.execute("""UPDATE odds_snapshot SET odds=odds+0.5
+                   WHERE race_id=? AND bet_type='win' AND is_final=0
+                   AND captured_at=? AND combo=?""",
+                (r.race_id, "2024-01-01T13:50:00+09:00", str(winner)))
+    bad = reconcile(con, "JRA")
+    bad_counts = bad["evaluation_coverage"]["by_time_point"]["morning"]
+    assert bad_counts["paired_scored"] == 0
+    assert bad_counts["odds_snapshot_mismatch"] == 1
+    assert not any(row["strategy"] == "ev_1.0" for row in bad["rows"])
     # 発走後に作られた予測は集計しない
     run("P2", "2024-01-01T16:00:00+09:00")
     assert reconcile(con, "JRA")["n_races"] == 1
