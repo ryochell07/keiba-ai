@@ -8,12 +8,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
+from datetime import datetime
 
 import numpy as np
 
 from . import config
 from .backtest import Ledger
 from .db import now_jst
+from .ev import STALE_MIN
 from .ledger import TIME_POINTS
 from .probs import all_bet_probs
 
@@ -72,6 +74,20 @@ def _place_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sq
     )
 
 
+def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool:
+    """保存された予測に対し、同時刻・発走前・十分新しい単勝オッズだけをEVに使う。"""
+    if run["odds_status"] != "complete" or not run["odds_same_time"]:
+        return False
+    try:
+        captured = datetime.fromisoformat(run["odds_captured_at"])
+        predicted = datetime.fromisoformat(run["predicted_at"])
+        post = datetime.fromisoformat(run["scheduled_post_at"])
+        age_min = (predicted - captured).total_seconds() / 60
+        return 0 <= age_min <= max_age_min and captured < post and predicted < post
+    except (TypeError, ValueError):
+        return False
+
+
 def reconcile(con: sqlite3.Connection, org: str) -> dict:
     """台帳の発走前の予測だけを集計する。結果は別テーブルから紐付け、台帳は変更しない。"""
     runs = con.execute(
@@ -99,7 +115,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         ai_all = _score(horses, "p_win_ai", fin, pay, evaluate_ev=False)
         if ai_all:
             tp_rows[tp]["ai_all_races"].append(ai_all)
-        if run["odds_status"] == "complete" and run["odds_same_time"]:
+        if _fresh_prestart_odds(run):
             scores = {m: _score(horses, c, fin, pay) for m, c in MODELS.items()}
             if all(scores.values()):
                 for m, s in scores.items():
@@ -139,7 +155,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
             top = max(combos, key=combos.get)
             ledger.bet(("top1", bet, "none"), rid, pay.get(top, 0))
         # 同時刻・全頭の単勝オッズが確認できない予測は、購入可能なEVとして集計しない。
-        if run["odds_status"] != "complete" or not run["odds_same_time"]:
+        if not _fresh_prestart_odds(run):
             continue
         for bet, col in (("win", "win_odds"), ("place", "place_odds")):
             if bet == "place" and not _place_odds_same_time(con, rid, horses, run["odds_captured_at"]):
