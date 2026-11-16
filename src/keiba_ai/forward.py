@@ -40,7 +40,7 @@ def _stats(rows: list[dict]) -> dict:
             "top1_roi": float(sum(x["ret"] for x in rows) / (100 * len(rows))), "ev100_bets": n_ev, "ev100_roi": float(sum(x["ev_ret"] for x in rows) / (100 * n_ev)) if n_ev else None}
 
 
-def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay: dict[str, int], odds_col: str = "win_odds", odds: dict[int, float] | None = None) -> dict | None:
+def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay: dict[str, int], odds_col: str = "win_odds", odds: dict[int, float] | None = None, *, evaluate_ev: bool = True) -> dict | None:
     ps = {h["umaban"]: h[col] for h in horses}
     if any(v is None for v in ps.values()):
         return None
@@ -49,7 +49,7 @@ def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay:
         return None
     top = max(ps, key=ps.get)
     get_o = (lambda h: odds.get(h["umaban"])) if odds is not None else (lambda h: h[odds_col])
-    ev = [h["umaban"] for h in horses if get_o(h) and ps[h["umaban"]] * get_o(h) >= 1.0]
+    ev = [h["umaban"] for h in horses if get_o(h) and ps[h["umaban"]] * get_o(h) >= 1.0] if evaluate_ev else []
     return {"ll": -np.log(max(ps[winners[0]], 1e-9)), "brier": sum((p - float(fin.get(u) == 1)) ** 2 for u, p in ps.items()), "hit": int(top in winners), "ret": pay.get(str(top), 0),
             "ev_n": len(ev), "ev_ret": sum(pay.get(str(u), 0) for u in ev)}
 
@@ -77,7 +77,8 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         horses = con.execute("SELECT * FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)).fetchall()
         fin = {r[0]: r[1] for r in con.execute("SELECT umaban, finish_pos FROM result WHERE race_id=?", (rid,))}
         pay = payouts.get((rid, "win"), {})
-        ai_all = _score(horses, "p_win_ai", fin, pay)
+        # AI単独の全レース評価ではオッズが不完全な場合があるためEVを算出しない。
+        ai_all = _score(horses, "p_win_ai", fin, pay, evaluate_ev=False)
         if ai_all:
             tp_rows[tp]["ai_all_races"].append(ai_all)
         if run["odds_status"] == "complete" and run["odds_same_time"]:
@@ -119,6 +120,9 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
                 continue
             top = max(combos, key=combos.get)
             ledger.bet(("top1", bet, "none"), rid, pay.get(top, 0))
+        # 同時刻・全頭の単勝オッズが確認できない予測は、購入可能なEVとして集計しない。
+        if run["odds_status"] != "complete" or not run["odds_same_time"]:
+            continue
         for bet, col in (("win", "win_odds"), ("place", "place_odds")):
             pay = payouts.get((rid, bet))
             if not pay or bet not in probs:
