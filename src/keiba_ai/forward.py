@@ -130,8 +130,8 @@ def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool
         return False
 
 
-def reconcile(con: sqlite3.Connection, org: str) -> dict:
-    """台帳の発走前の予測だけを集計する。結果は別テーブルから紐付け、台帳は変更しない。"""
+def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_report: bool = True) -> dict:
+    """発走前予測と結果を照合する。persist=False ならDBを変更せず、write_report=False ならファイルを作らない。"""
     runs = con.execute(
         """SELECT p.* FROM prediction_run p
            WHERE p.org=? AND (p.scheduled_post_at IS NULL OR p.predicted_at<p.scheduled_post_at)
@@ -222,14 +222,17 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
     out_rows = []
     bid = f"forward-{org}"
     created = now_jst()
-    con.execute("DELETE FROM backtest_result WHERE backtest_id=?", (bid,))
+    if persist:
+        con.execute("DELETE FROM backtest_result WHERE backtest_id=?", (bid,))
     for (strategy, bet, basis), m in ledger.rows():
-        con.execute("""INSERT INTO backtest_result(backtest_id,created_at,org,strategy,bet_type,n_races,n_bets,n_hits,stake,payout,roi,roi_ci_low,roi_ci_high,odds_basis,detail)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (bid, created, org, f"{strategy}|{basis}", bet, m["n_races"], m["n_bets"], m["n_hits"], m["stake"], m["payout"],
-                     m["roi"], m["roi_ci_low"], m["roi_ci_high"], basis, json.dumps({"max_drawdown": m["max_drawdown"]})))
+        if persist:
+            con.execute("""INSERT INTO backtest_result(backtest_id,created_at,org,strategy,bet_type,n_races,n_bets,n_hits,stake,payout,roi,roi_ci_low,roi_ci_high,odds_basis,detail)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (bid, created, org, f"{strategy}|{basis}", bet, m["n_races"], m["n_bets"], m["n_hits"], m["stake"], m["payout"],
+                         m["roi"], m["roi_ci_low"], m["roi_ci_high"], basis, json.dumps({"max_drawdown": m["max_drawdown"]})))
         out_rows.append({"strategy": strategy, "bet_type": bet, "odds_basis": basis, **m})
-    con.commit()
+    if persist:
+        con.commit()
     comparisons = {tp: _paired_comparison(tp_rows[tp]) for tp in TIME_POINTS}
     for tp, counts in eligibility.items():
         n = counts["selected_runs"]
@@ -244,6 +247,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
                                       "by_time_point": eligibility},
               "final_odds_reference": {"purchasable": False, "note": "確定オッズは発走後に確定する値で、購入時点の比較ではない",
                                        "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in final_rows.items() if d}}}
-    config.REPORTS.mkdir(parents=True, exist_ok=True)
-    (config.REPORTS / f"forward_{org}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    if write_report:
+        config.REPORTS.mkdir(parents=True, exist_ok=True)
+        (config.REPORTS / f"forward_{org}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return report
