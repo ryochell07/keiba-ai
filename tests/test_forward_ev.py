@@ -246,3 +246,56 @@ def test_paired_comparison_rejects_different_race_ids_and_too_few_dates():
     rows["blend"][0]["race_id"] = "r2"
     with pytest.raises(ValueError, match="matching race IDs"):
         _paired_comparison(rows)
+
+
+def test_verified_prestart_requires_known_time_and_timezone_aware_ordering():
+    from keiba_ai.forward import _valid_prestart_run
+
+    assert _valid_prestart_run({
+        "predicted_at": "2030-03-02T10:00:00+09:00",
+        "scheduled_post_at": "2030-03-02T01:30:00+00:00",
+    })  # 同じ瞬間の比較。文字列としては逆転する
+    assert not _valid_prestart_run({
+        "predicted_at": "2030-03-02T10:30:00+09:00",
+        "scheduled_post_at": "2030-03-02T01:15:00+00:00",
+    })
+    assert not _valid_prestart_run({
+        "predicted_at": "2030-03-02T10:00:00+09:00",
+        "scheduled_post_at": None,
+    })
+    assert not _valid_prestart_run({
+        "predicted_at": "2030-03-02T10:00:00",
+        "scheduled_post_at": "2030-03-02T10:30:00",
+    })
+    assert not _valid_prestart_run({
+        "predicted_at": "invalid",
+        "scheduled_post_at": "2030-03-02T10:30:00+09:00",
+    })
+
+
+def test_readonly_report_counts_predictions_missing_prestart_evidence(tmp_path, monkeypatch):
+    import sqlite3
+    from keiba_ai import config
+    from keiba_ai.forward import reconcile
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript("""
+        CREATE TABLE race (race_id TEXT, org TEXT, race_date TEXT, post_time TEXT);
+        CREATE TABLE result (race_id TEXT, finish_pos INTEGER);
+        CREATE TABLE prediction_run (
+            race_id TEXT, org TEXT, predicted_at TEXT, scheduled_post_at TEXT);
+        CREATE TABLE odds_snapshot (
+            race_id TEXT, combo TEXT, odds REAL, is_final INTEGER, bet_type TEXT);
+        INSERT INTO race VALUES ('r','NAR','2030-03-02','10:30');
+        INSERT INTO result VALUES ('r',1);
+        INSERT INTO prediction_run VALUES ('r','NAR','2030-03-02T10:00:00+09:00',NULL);
+        INSERT INTO prediction_run VALUES (
+            'r','NAR','2030-03-02T10:31:00+09:00','2030-03-02T10:30:00+09:00');
+    """)
+    con.execute("PRAGMA query_only = ON")
+    monkeypatch.setattr(config, "REPORTS", tmp_path / "untouched")
+    out = reconcile(con, "NAR", persist=False, write_report=False)
+    assert out["excluded_runs_without_verified_prestart_time"] == 2
+    assert out["n_races"] == 0
+    assert not (tmp_path / "untouched").exists()
