@@ -34,6 +34,33 @@ def quote_is_fresh(quote: dict | None, at: datetime, post: datetime | None, max_
         return False
 
 
+def latest_complete_win_odds(con: sqlite3.Connection, race_id: str, umaban: list[int],
+                             at: datetime, post: datetime | None) -> dict[str, dict] | None:
+    """直近60分の非確定・同一取得時刻の全頭単勝オッズを安全に再利用する。
+
+    馬ごとに別時刻のオッズを寄せ集めることはしない。戻り値のキーは馬番文字列。
+    """
+    required = {str(int(u)) for u in umaban}
+    if not required or len(required) != len(umaban) or post is None:
+        return None
+    rows = con.execute(
+        """SELECT combo, odds, odds_max, captured_at FROM odds_snapshot
+           WHERE race_id=? AND bet_type='win' AND is_final=0
+             AND captured_at<>'final' AND julianday(captured_at)<=julianday(?)""",
+        (race_id, at.isoformat()),
+    )
+    snapshots: dict[str, dict[str, dict]] = {}
+    for row in rows:
+        quote = dict(row)
+        combo = str(quote["combo"])
+        if combo in required and quote_is_fresh(quote, at, post):
+            snapshots.setdefault(quote["captured_at"], {})[combo] = quote
+    for stamp in sorted(snapshots, key=datetime.fromisoformat, reverse=True):
+        if required <= snapshots[stamp].keys():
+            return snapshots[stamp]
+    return None
+
+
 def expected(prob: float, odds: float | None, odds_max: float | None = None) -> tuple[float | None, float | None]:
     """期待値比率 = 確率 × オッズ − 1。複勝・ワイドは下限と上限の 2 値を返す。"""
     if odds is None:
