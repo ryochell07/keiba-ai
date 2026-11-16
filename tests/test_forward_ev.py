@@ -84,3 +84,32 @@ def test_paired_model_comparison_reports_same_race_deltas():
     assert _paired_comparison({}) == {"n_races": 0}
     with pytest.raises(ValueError):
         _paired_comparison({**rows, "blend": rows["blend"][:1]})
+
+
+def test_win_ev_requires_nonfinal_snapshot_matching_all_horses():
+    import sqlite3
+    from keiba_ai.forward import _win_odds_same_time
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute("""CREATE TABLE odds_snapshot (
+        race_id TEXT, bet_type TEXT, combo TEXT, captured_at TEXT,
+        odds REAL, is_final INTEGER)""")
+    stamp = "2030-03-02T10:00:00+09:00"
+    horses = [
+        {"umaban": 1, "win_odds": 2.0, "odds_captured_at": stamp},
+        {"umaban": 2, "win_odds": 4.0, "odds_captured_at": stamp},
+    ]
+    con.executemany("INSERT INTO odds_snapshot VALUES ('r','win',?,?,?,0)",
+                    [("1", stamp, 2.0), ("2", stamp, 4.0)])
+    assert _win_odds_same_time(con, "r", horses, stamp)
+    assert not _win_odds_same_time(con, "r", horses, None)
+    assert not _win_odds_same_time(con, "r", [], stamp)
+    assert not _win_odds_same_time(con, "r", [{**horses[0], "odds_captured_at": "other"}, horses[1]], stamp)
+    assert not _win_odds_same_time(con, "r", [{**horses[0], "win_odds": None}, horses[1]], stamp)
+    assert not _win_odds_same_time(con, "r", [{**horses[0], "win_odds": 0.0}, horses[1]], stamp)
+    con.execute("UPDATE odds_snapshot SET odds=2.1 WHERE combo='1'")
+    assert not _win_odds_same_time(con, "r", horses, stamp)
+    con.execute("UPDATE odds_snapshot SET odds=2.0 WHERE combo='1'")
+    con.execute("UPDATE odds_snapshot SET is_final=1 WHERE combo='2'")
+    assert not _win_odds_same_time(con, "r", horses, stamp)
