@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
+import secrets
 import sqlite3
 
 import numpy as np
@@ -17,6 +19,18 @@ from .forward import (
 
 POINTS = ("t30", "t10", "last")
 ALPHAS = tuple(round(i * 0.05, 2) for i in range(21))
+# プロセス内だけで共有する比較用秘密値。公開レポートに出力しない。
+_COMPARISON_KEY = secrets.token_bytes(32)
+
+
+def _evaluation_token(rows: list[dict]) -> str:
+    """同一レース集合の照合用。IDそのものや推測可能な無鍵ハッシュを公開しない。"""
+    hasher = hashlib.blake2b(key=_COMPARISON_KEY, digest_size=32)
+    for race_id, race_date in sorted((str(r["race_id"]), str(r["race_date"])) for r in rows):
+        payload = (race_id + "\\0" + race_date).encode("utf-8")
+        hasher.update(len(payload).to_bytes(8, "big"))
+        hasher.update(payload)
+    return hasher.hexdigest()
 
 
 def _best_alpha(history: list[dict], regularization: float = 0.002,
@@ -146,6 +160,8 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             "applied_to_production": False,
             "checks": checks,
         },
+        # 内部専用: evaluate_shadow が公開レポートへ出す前に除去する。
+        "_comparison_token": _evaluation_token(selected["candidate"]),
         "optimization_brier_weight": brier_weight,
         "valid_races": len(records), "valid_days": len(days),
         "minimum_training_races": min_history, "minimum_training_days": min_history_dates,
@@ -175,7 +191,9 @@ def compare_shadow_summaries(logloss: dict, brier: dict) -> dict:
         left, right = logloss[tp], brier[tp]
         n = left["forward_test_races"]
         if (n != right["forward_test_races"]
-                or left["forward_test_days"] != right["forward_test_days"]):
+                or left["forward_test_days"] != right["forward_test_days"]
+                or not left.get("_comparison_token")
+                or left["_comparison_token"] != right.get("_comparison_token")):
             raise ValueError("shadow candidates must share the same forward test set")
         old = left["scores_on_same_forward_test_races"].get("candidate", {})
         new = right["scores_on_same_forward_test_races"].get("candidate", {})
@@ -251,6 +269,10 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
     challenger = {tp: walk_forward_blend(items[tp], min_history=min_history,
                                        brier_weight=0.25)
                   for tp in POINTS}
+    comparison = compare_shadow_summaries(legacy, challenger)
+    # ID照合トークンは内部のみ。暗号化レポートにも書き出さない。
+    for summary in (*legacy.values(), *challenger.values()):
+        summary.pop("_comparison_token", None)
     return {
         "org": org,
         "method": "AI確率と同時刻市場確率の凸結合。過去の開催日だけで0〜1の重みを0.05刻みで選び、その翌日以降を逐次検証。市場オッズが不完全な場合は評価対象外",
@@ -259,5 +281,5 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
             "brier_weight": 0.25,
             "by_time_point": challenger,
         },
-        "challenger_minus_legacy": compare_shadow_summaries(legacy, challenger),
+        "challenger_minus_legacy": comparison,
     }
