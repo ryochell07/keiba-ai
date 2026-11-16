@@ -262,7 +262,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
     tp_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
     final_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
     # 時点ごとの評価対象数。欠損による見かけの精度向上を検知できるよう母数を保持する。
-    eligibility = {tp: {"selected_runs": 0, "ai_scored": 0, "deployed_scored": 0,
+    eligibility = {tp: {"selected_runs": 0, "outcome_valid": 0, "ai_scored": 0, "deployed_scored": 0,
                         "used_model_counts": {"ai": 0, "market": 0, "blend": 0, "other": 0},
                         "fresh_complete_odds": 0,
                         "paired_scored": 0, "incomplete_results": 0,
@@ -283,6 +283,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         if outcome_issue:
             eligibility[tp][outcome_issue] += 1
             continue
+        eligibility[tp]["outcome_valid"] += 1
         fin = {r[0]: r[1] for r in con.execute("SELECT umaban, finish_pos FROM result WHERE race_id=?", (rid,))}
         pay = payouts.get((rid, "win"), {})
         # AI単独の全レース評価ではオッズが不完全な場合があるためEVを算出しない。
@@ -381,6 +382,10 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
     for tp, counts in eligibility.items():
         n = counts["selected_runs"]
         counts["paired_coverage_rate"] = counts["paired_scored"] / n if n else None
+        counts["outcome_coverage_rate"] = counts["outcome_valid"] / n if n else None
+        counts["paired_rate_after_outcome_validation"] = (
+            counts["paired_scored"] / counts["outcome_valid"] if counts["outcome_valid"] else None
+        )
         counts["odds_eligible_rate"] = counts["fresh_complete_odds"] / n if n else None
         counts["n_model_versions"] = len(model_versions[tp])
         counts["mixed_model_versions"] = len(model_versions[tp]) > 1
