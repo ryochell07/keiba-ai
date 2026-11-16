@@ -281,3 +281,14 @@ def test_roi_cluster_gate_passes_only_with_nonnegative_lower_bound():
     assert out["candidate_minus_deployed_roi_ci95"] == pytest.approx([0.0, 0.0])
     assert out["promotion_gate"]["checks"]["roi_cluster_ci_not_worse"] is True
     assert out["promotion_gate"]["applied_to_production"] is False
+
+
+def test_roi_cluster_gate_rejects_consistently_worse_return():
+    rows = [_record(d, r, ai_winner=0.1, market_winner=0.2)
+            for d in range(1, 19) for r in range(25)]
+    out = walk_forward_blend(rows, min_history=50, min_history_dates=2)
+    assert out["forward_test_races"] == 400
+    assert out["promotion_gate"]["checks"]["complete_forward_payout_coverage"] is True
+    assert out["candidate_minus_deployed_roi_ci95"] == pytest.approx([-2.5, -2.5])
+    assert out["promotion_gate"]["checks"]["roi_cluster_ci_not_worse"] is False
+    assert out["promotion_gate"]["eligible_for_review"] is False
