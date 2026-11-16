@@ -12,6 +12,10 @@ on:
         options: [BOTH, NAR, JRA]
         default: BOTH
         required: true
+      public_summary:
+        description: "集計値だけの表を実行画面とログに出す（公開される。レースID・馬番・時刻・オッズは出ない）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +59,7 @@ jobs:
         env:
           KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
           EVAL_ORG: ${{ inputs.org }}
+          EVAL_PUBLIC_SUMMARY: ${{ inputs.public_summary }}
         run: |
           set -euo pipefail
           set +x
@@ -65,7 +70,7 @@ jobs:
           fi
           case "$EVAL_ORG" in BOTH|NAR|JRA) ;; *) exit 2 ;; esac
           workdir="$RUNNER_TEMP/keiba-eval"
-          trap 'rm -f "$workdir/metrics.json" "$workdir/keiba-state.enc" "$workdir/evaluation.stdout" "$workdir/evaluation.stderr" "$workdir/encryption.stdout" "$workdir/encryption.stderr"' EXIT
+          trap 'rm -f "$workdir/metrics.json" "$workdir/keiba-state.enc" "$workdir/evaluation.stdout" "$workdir/evaluation.stderr" "$workdir/encryption.stdout" "$workdir/encryption.stderr" "$workdir/summary.md" "$workdir/summary.stderr"' EXIT
           args=(reconcile --read-only --research --encrypted-state "$workdir/keiba-state.enc" \
                 --output "$workdir/metrics.json")
           if [ "$EVAL_ORG" != BOTH ]; then args+=(--org "$EVAL_ORG"); fi
@@ -85,7 +90,20 @@ jobs:
             echo "::error::評価結果の暗号化に失敗しました（詳細は公開ログに出力しません）"
             exit "$rc"
           fi
-          echo "読み取り専用の集計と暗号化を完了（成績はログ非表示）"
+          if [ "$EVAL_PUBLIC_SUMMARY" != "true" ]; then
+            echo "読み取り専用の集計と暗号化を完了（成績はログ非表示）"
+            exit 0
+          fi
+          # 起動時に明示したときだけ。決めた項目の数値だけを表にし、レポート内の文字列は出さない
+          rc=0
+          .venv/bin/python -m keiba_ai.eval_summary --input "$workdir/metrics.json" \
+            > "$workdir/summary.md" 2> "$workdir/summary.stderr" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::集計値の表の作成に失敗しました（詳細は公開ログに出力しません）"
+            exit "$rc"
+          fi
+          cat "$workdir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$workdir/summary.md"
 
       - name: Upload encrypted artifact only
         uses: actions/upload-artifact@v4
@@ -103,3 +121,4 @@ jobs:
           rm -f "$RUNNER_TEMP/keiba-eval/metrics.json" "$RUNNER_TEMP/keiba-eval/keiba-state.enc"
           rm -f "$RUNNER_TEMP/keiba-eval/evaluation.stdout" "$RUNNER_TEMP/keiba-eval/evaluation.stderr"
           rm -f "$RUNNER_TEMP/keiba-eval/encryption.stdout" "$RUNNER_TEMP/keiba-eval/encryption.stderr"
+          rm -f "$RUNNER_TEMP/keiba-eval/summary.md" "$RUNNER_TEMP/keiba-eval/summary.stderr"

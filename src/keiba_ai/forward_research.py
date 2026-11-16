@@ -91,7 +91,21 @@ def _score_record(record: dict, probabilities: dict[int, float]) -> dict:
         "hit": int(top == winner),
         "ret": float(payout.get(str(top), 0)) if verified else None,
         "ev_n": 0, "ev_ret": 0,
+        # 校正の集計用。全出走馬の (予測確率, 1着か) と本命の予測確率。公開集計では区間ごとの平均だけを出す
+        "cal": [(float(p), int(u == winner)) for u, p in probabilities.items()],
+        "p_top": float(probabilities[top]),
     }
+
+
+def _calibration(rows: list[dict]) -> dict:
+    """予測確率の信頼性。全出走馬の確率を0.1刻みの10区間に分けた期待較正誤差 (ECE) と、本命の見込みと実際の1着率。"""
+    pairs = np.array([c for r in rows for c in r["cal"]], dtype=float)
+    bins = np.minimum((pairs[:, 0] * 10).astype(int), 9)
+    ece = sum(abs(pairs[bins == b, 0].mean() - pairs[bins == b, 1].mean()) * int((bins == b).sum())
+              for b in range(10) if (bins == b).any()) / len(pairs)
+    return {"ece_10bin": float(ece), "n_horses": int(len(pairs)),
+            "top1_mean_prob": float(np.mean([r["p_top"] for r in rows])),
+            "top1_hit": float(np.mean([r["hit"] for r in rows]))}
 
 
 def _paired_roi_difference_ci95(candidate: list[dict], deployed: list[dict],
@@ -161,7 +175,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         history.extend(batch)
 
     n = len(selected["candidate"])
-    scored = {k: _stats(v) for k, v in selected.items()} if n else {}
+    scored = {k: {**_stats(v), "calibration": _calibration(v)} for k, v in selected.items()} if n else {}
     reference = selected["deployed"]
     candidate = selected["candidate"]
     delta = (_date_block_ci95(candidate, reference) if n else None)
