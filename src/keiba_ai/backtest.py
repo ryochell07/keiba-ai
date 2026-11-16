@@ -85,7 +85,7 @@ def _cutoff_odds(con, org: str, cutoff_min: int = 10, max_age_min: int = 60) -> 
            FROM odds_snapshot o JOIN race r USING(race_id)
            WHERE o.is_final=0 AND o.captured_at<>'final'
              AND r.org=? AND r.post_time IS NOT NULL
-           ORDER BY julianday(o.captured_at), o.rowid""", (org,)).fetchall()
+           ORDER BY julianday(o.captured_at), o.captured_at""", (org,)).fetchall()
     out = {}
     for r in rows:
         try:
