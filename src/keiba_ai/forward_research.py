@@ -19,6 +19,9 @@ from .forward import (
 
 POINTS = ("t30", "t10", "last")
 ALPHAS = tuple(round(i * 0.05, 2) for i in range(21))
+# 対数線形の合成 p ∝ AI^a × 市場^b の指数。本番の合成 (AIの強さ×alpha + 市場の対数確率×beta) と同じ形。
+# 和が1を超えると確率が鋭く、下回るとなだらかになる。
+EXPONENTS = tuple(round(i * 0.05, 2) for i in range(51))   # 0〜2.5
 # プロセス内だけで共有する比較用秘密値。公開レポートに出力しない。
 _COMPARISON_KEY = secrets.token_bytes(32)
 
@@ -75,6 +78,54 @@ def _best_alpha(history: list[dict], regularization: float = 0.002,
             loss += brier_weight * brier
         values.append(loss + regularization * (alpha - 0.5) ** 2)
     return float(ALPHAS[int(np.argmin(values))])
+
+
+def _log_matrices(history: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """レースごとの log 確率を、頭数の違いを埋めた行列にする (埋めた所は mask=False)。"""
+    width = max(len(r["ai"]) for r in history)
+    la = np.zeros((len(history), width))
+    lm = np.zeros((len(history), width))
+    mask = np.zeros((len(history), width), dtype=bool)
+    win = np.zeros(len(history), dtype=int)
+    for i, rec in enumerate(history):
+        if set(rec["ai"]) != set(rec["market"]):
+            raise ValueError("AI and market runner sets must match")
+        for j, u in enumerate(sorted(rec["ai"])):
+            la[i, j] = np.log(max(rec["ai"][u], 1e-12))
+            lm[i, j] = np.log(max(rec["market"][u], 1e-12))
+            mask[i, j] = True
+            if u == rec["winner"]:
+                win[i] = j
+    return la, lm, mask, win
+
+
+def _best_exponents(history: list[dict], regularization: float = 0.002) -> tuple[float, float]:
+    """過去の開催日だけで、AI と市場の確率をかけ合わせる指数 (a, b) を LogLoss 最小で選ぶ。"""
+    if not history:
+        return 0.5, 0.5
+    la, lm, mask, win = _log_matrices(history)
+    rows = np.arange(len(history))
+    b = np.array(EXPONENTS)
+    best = (np.inf, 0.5, 0.5)
+    for a in EXPONENTS:
+        z = np.where(mask[None], a * la[None] + b[:, None, None] * lm[None], -np.inf)   # [b, レース, 馬]
+        top = z.max(axis=2, keepdims=True)
+        lse = top[:, :, 0] + np.log(np.exp(z - top).sum(axis=2))
+        loss = (lse - z[:, rows, win]).mean(axis=1) + regularization * ((a - 0.5) ** 2 + (b - 0.5) ** 2)
+        i = int(np.argmin(loss))
+        if loss[i] < best[0]:
+            best = (float(loss[i]), a, EXPONENTS[i])
+    return float(best[1]), float(best[2])
+
+
+def _loglinear(record: dict, a: float, b: float) -> dict[int, float]:
+    """p ∝ AI^a × 市場^b をレース内で正規化する。"""
+    z = {u: a * np.log(max(record["ai"][u], 1e-12)) + b * np.log(max(record["market"][u], 1e-12))
+         for u in record["ai"]}
+    top = max(z.values())
+    e = {u: float(np.exp(v - top)) for u, v in z.items()}
+    total = sum(e.values())
+    return {u: v / total for u, v in e.items()}
 
 
 def _score_record(record: dict, probabilities: dict[int, float]) -> dict:
@@ -138,10 +189,17 @@ def _paired_roi_difference_ci95(candidate: list[dict], deployed: list[dict],
 
 def walk_forward_blend(records: list[dict], *, min_history: int = 50,
                        min_history_dates: int = 2, brier_weight: float = 0.0,
-                       include_private: bool = False) -> dict:
-    """同一開催日の結果を見て同日レースを調整しない、逐次外部検証。"""
+                       method: str = "linear", include_private: bool = False) -> dict:
+    """同一開催日の結果を見て同日レースを調整しない、逐次外部検証。
+
+    method="linear" は α×AI+(1−α)×市場、"loglinear" は AI^a×市場^b の正規化 (本番の合成と同じ形)。
+    """
     if not np.isfinite(brier_weight) or brier_weight < 0:
         raise ValueError("brier_weight must be a finite nonnegative number")
+    if method not in ("linear", "loglinear"):
+        raise ValueError("method must be linear or loglinear")
+    if method == "loglinear" and brier_weight:
+        raise ValueError("brier_weight is only for the linear blend")
     days: dict[str, list[dict]] = defaultdict(list)
     race_ids = set()
     for record in records:
@@ -154,19 +212,25 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
     history: list[dict] = []
     selected: dict[str, list[dict]] = {m: [] for m in ("candidate", "ai", "market", "blend", "deployed")}
     selected_alphas: list[float] = []
+    selected_exponents: list[tuple[float, float]] = []
     evaluation_days = 0
 
     for day in sorted(days):
         batch = days[day]
         # 当日の勝敗を評価してから重みを選択することは絶対にしない。
         if len(history) >= min_history and len({r["race_date"] for r in history}) >= min_history_dates:
-            alpha = _best_alpha(history, brier_weight=brier_weight)
+            if method == "loglinear":
+                a, b = _best_exponents(history)
+                selected_exponents.extend([(a, b)] * len(batch))
+                mix = lambda rec: _loglinear(rec, a, b)
+            else:
+                alpha = _best_alpha(history, brier_weight=brier_weight)
+                selected_alphas.extend([alpha] * len(batch))
+                mix = lambda rec: {u: alpha * rec["ai"][u] + (1 - alpha) * rec["market"][u] for u in rec["ai"]}
             evaluation_days += 1
-            selected_alphas.extend([alpha] * len(batch))
             for rec in batch:
                 probabilities = {
-                    "candidate": {u: alpha * rec["ai"][u] + (1 - alpha) * rec["market"][u]
-                                  for u in rec["ai"]},
+                    "candidate": mix(rec),
                     "ai": rec["ai"], "market": rec["market"],
                     "blend": rec["blend"], "deployed": rec["used"],
                 }
@@ -228,6 +292,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             "applied_to_production": False,
             "checks": checks,
         },
+        "method": method,
         "optimization_brier_weight": brier_weight,
         "valid_races": len(records), "valid_days": len(days),
         "minimum_training_races": min_history, "minimum_training_days": min_history_dates,
@@ -235,6 +300,10 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         "mean_ai_weight": float(np.mean(selected_alphas)) if selected_alphas else None,
         "min_ai_weight": min(selected_alphas) if selected_alphas else None,
         "max_ai_weight": max(selected_alphas) if selected_alphas else None,
+        "mean_ai_exponent": (float(np.mean([e[0] for e in selected_exponents]))
+                             if selected_exponents else None),
+        "mean_market_exponent": (float(np.mean([e[1] for e in selected_exponents]))
+                                 if selected_exponents else None),
         "scores_on_same_forward_test_races": scored,
         "relative_log_loss_improvement_vs_deployed_pct": float(improvement) if improvement is not None else None,
         "candidate_minus_deployed_log_loss": (
@@ -354,7 +423,7 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
             "blend": {h["umaban"]: h["p_win_blend"] for h in rows},
             "used": {h["umaban"]: h["p_win_used"] for h in rows},
         })
-    legacy, challenger, comparison = _shadow_block(items, min_history)
+    block = _shadow_block(items, min_history)
     # 再学習でAIの版が変わると、古い版の成績で選んだ重みを新しい版に当てることになる。
     # 採用中の版だけで同じ評価をやり直し、版の混在による見かけの差と区別する。
     active = con.execute(
@@ -364,39 +433,40 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
     current = None
     if active is not None:
         same = {tp: [x for x in items[tp] if x["model_version_id"] == active[0]] for tp in POINTS}
-        c_legacy, c_challenger, c_comparison = _shadow_block(same, min_history)
-        current = {
-            "by_time_point": c_legacy,
-            "brier_regularized_challenger": {"brier_weight": 0.25, "by_time_point": c_challenger},
-            "challenger_minus_legacy": c_comparison,
-        }
+        current = _shadow_block(same, min_history)
     return {
         "org": org,
         "method": "AI確率と同時刻市場確率の凸結合。過去の開催日だけで0〜1の重みを0.05刻みで選び、その翌日以降を逐次検証。市場オッズが不完全な場合は評価対象外",
         "model_versions_in_valid_races": {
             tp: len({x["model_version_id"] for x in items[tp]}) for tp in POINTS
         },
-        "by_time_point": legacy,
-        "brier_regularized_challenger": {
-            "brier_weight": 0.25,
-            "by_time_point": challenger,
-        },
-        "challenger_minus_legacy": comparison,
+        **block,
         "current_model_only": current,
     }
 
 
-def _shadow_block(items: dict[str, list[dict]], min_history: int) -> tuple[dict, dict, dict]:
-    """従来の研究候補とBrier対応候補を同じ将来評価集合で比べ、内部の照合値を除いて返す。"""
+def _shadow_block(items: dict[str, list[dict]], min_history: int) -> dict:
+    """従来の研究候補・Brier対応候補・対数線形の候補を同じ将来評価集合で比べ、内部の照合値を除いて返す。"""
     legacy = {tp: walk_forward_blend(items[tp], min_history=min_history,
                                      include_private=True)
               for tp in POINTS}
     challenger = {tp: walk_forward_blend(items[tp], min_history=min_history,
                                        brier_weight=0.25, include_private=True)
                   for tp in POINTS}
+    # 本番の合成と同じ形 (AI^a × 市場^b) で、指数を過去の開催日だけから毎日選び直す
+    loglinear = {tp: walk_forward_blend(items[tp], min_history=min_history,
+                                      method="loglinear", include_private=True)
+                 for tp in POINTS}
     comparison = compare_shadow_summaries(legacy, challenger)
+    loglinear_comparison = compare_shadow_summaries(legacy, loglinear)
     # ID照合トークンは内部のみ。暗号化レポートにも書き出さない。
-    for summary in (*legacy.values(), *challenger.values()):
+    for summary in (*legacy.values(), *challenger.values(), *loglinear.values()):
         summary.pop("_comparison_token", None)
         summary.pop("_candidate_scored_rows", None)
-    return legacy, challenger, comparison
+    return {
+        "by_time_point": legacy,
+        "brier_regularized_challenger": {"brier_weight": 0.25, "by_time_point": challenger},
+        "challenger_minus_legacy": comparison,
+        "loglinear_challenger": {"by_time_point": loglinear},
+        "loglinear_minus_legacy": loglinear_comparison,
+    }

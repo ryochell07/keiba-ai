@@ -53,46 +53,69 @@ def _improve(base, new):
     return (base - new) / base * 100
 
 
+def _row(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
 def _research_tables(block: dict) -> list[str]:
-    legacy = _get(block, "by_time_point") or {}
-    brier = _get(block, "brier_regularized_challenger", "by_time_point") or {}
-    out = ["| 時点 | 検証レース | 検証日 | 現行LL | LL候補 | 改善率 | Brier候補 | 改善率 | 現行Brier | LL候補Brier | 改善率 | Brier候補Brier | 改善率 | LL候補−現行 LL差95%区間 |",
-           "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+    """現行と3つの研究候補 (線形・Brier対応・対数線形) を、同じ将来評価レースで並べる。"""
+    runs = {
+        "linear": _get(block, "by_time_point") or {},
+        "brier": _get(block, "brier_regularized_challenger", "by_time_point") or {},
+        "loglinear": _get(block, "loglinear_challenger", "by_time_point") or {},
+    }
+    names = ("linear", "brier", "loglinear")
+
+    def scores(tp):
+        dep = _get(runs["linear"], tp, "scores_on_same_forward_test_races", "deployed") or {}
+        return dep, [_get(runs[k], tp, "scores_on_same_forward_test_races", "candidate") or {} for k in names]
+
+    out = ["LogLoss", "", "| 時点 | 検証レース | 検証日 | 現行 | 線形 | 改善率 | Brier対応 | 改善率 | 対数線形 | 改善率 "
+           "| 線形−現行の95%区間 | 対数線形−現行の95%区間 |",
+           "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for tp, label in POINTS:
-        s_old = _get(legacy, tp, "scores_on_same_forward_test_races") or {}
-        s_new = _get(brier, tp, "scores_on_same_forward_test_races") or {}
-        dep, cand, chal = s_old.get("deployed") or {}, s_old.get("candidate") or {}, s_new.get("candidate") or {}
-        out.append("| " + " | ".join([
-            label, _num(_get(legacy, tp, "forward_test_races"), "int"), _num(_get(legacy, tp, "forward_test_days"), "int"),
-            _num(dep.get("log_loss")), _num(cand.get("log_loss")), _num(_improve(dep.get("log_loss"), cand.get("log_loss")), "pp"),
-            _num(chal.get("log_loss")), _num(_improve(dep.get("log_loss"), chal.get("log_loss")), "pp"),
-            _num(dep.get("brier")), _num(cand.get("brier")), _num(_improve(dep.get("brier"), cand.get("brier")), "pp"),
-            _num(chal.get("brier")), _num(_improve(dep.get("brier"), chal.get("brier")), "pp"),
-            _ci(_get(legacy, tp, "candidate_minus_deployed_ci95", "log_loss")),
-        ]) + " |")
-    out += ["", "| 時点 | 現行的中 | LL候補的中 | Brier候補的中 | 現行ROI | LL候補ROI | Brier候補ROI | 払戻カバー | 現行ECE | LL候補ECE | Brier候補ECE | 現行の本命見込み | AI重み(LL/Brier) | 審査資格(LL/Brier) |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+        dep, cands = scores(tp)
+        cells = [label, _num(_get(runs["linear"], tp, "forward_test_races"), "int"),
+                 _num(_get(runs["linear"], tp, "forward_test_days"), "int"), _num(dep.get("log_loss"))]
+        for c in cands:
+            cells += [_num(c.get("log_loss")), _num(_improve(dep.get("log_loss"), c.get("log_loss")), "pp")]
+        cells += [_ci(_get(runs["linear"], tp, "candidate_minus_deployed_ci95", "log_loss")),
+                  _ci(_get(runs["loglinear"], tp, "candidate_minus_deployed_ci95", "log_loss"))]
+        out.append(_row(cells))
+    out += ["", "Brier", "", "| 時点 | 現行 | 線形 | 改善率 | Brier対応 | 改善率 | 対数線形 | 改善率 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|"]
     for tp, label in POINTS:
-        s_old = _get(legacy, tp, "scores_on_same_forward_test_races") or {}
-        s_new = _get(brier, tp, "scores_on_same_forward_test_races") or {}
-        dep, cand, chal = s_old.get("deployed") or {}, s_old.get("candidate") or {}, s_new.get("candidate") or {}
-        out.append("| " + " | ".join([
-            label, _num(dep.get("top1_hit"), "pct"), _num(cand.get("top1_hit"), "pct"), _num(chal.get("top1_hit"), "pct"),
-            _num(dep.get("top1_roi"), "pct"), _num(cand.get("top1_roi"), "pct"), _num(chal.get("top1_roi"), "pct"),
-            _num(dep.get("payout_coverage_rate"), "pct"),
-            _num(_get(dep, "calibration", "ece_10bin")), _num(_get(cand, "calibration", "ece_10bin")),
-            _num(_get(chal, "calibration", "ece_10bin")), _num(_get(dep, "calibration", "top1_mean_prob"), "pct"),
-            f"{_num(_get(legacy, tp, 'mean_ai_weight'))} / {_num(_get(brier, tp, 'mean_ai_weight'))}",
-            f"{_num(_get(legacy, tp, 'promotion_gate', 'eligible_for_review'))} / "
-            f"{_num(_get(brier, tp, 'promotion_gate', 'eligible_for_review'))}",
-        ]) + " |")
-    out += ["", "| 時点 | AI単独LL | 市場単独LL | 従来合成LL | AI単独的中 | 市場単独的中 |", "|---|---:|---:|---:|---:|---:|"]
+        dep, cands = scores(tp)
+        cells = [label, _num(dep.get("brier"))]
+        for c in cands:
+            cells += [_num(c.get("brier")), _num(_improve(dep.get("brier"), c.get("brier")), "pp")]
+        out.append(_row(cells))
+    out += ["", "的中率・参考ROI", "", "| 時点 | 現行的中 | 線形 | Brier対応 | 対数線形 | 現行ROI | 線形 | Brier対応 | 対数線形 | 払戻カバー |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for tp, label in POINTS:
-        s = _get(legacy, tp, "scores_on_same_forward_test_races") or {}
-        out.append("| " + " | ".join([
-            label, _num(_get(s, "ai", "log_loss")), _num(_get(s, "market", "log_loss")), _num(_get(s, "blend", "log_loss")),
-            _num(_get(s, "ai", "top1_hit"), "pct"), _num(_get(s, "market", "top1_hit"), "pct"),
-        ]) + " |")
+        dep, cands = scores(tp)
+        out.append(_row([label, _num(dep.get("top1_hit"), "pct")] + [_num(c.get("top1_hit"), "pct") for c in cands]
+                        + [_num(dep.get("top1_roi"), "pct")] + [_num(c.get("top1_roi"), "pct") for c in cands]
+                        + [_num(dep.get("payout_coverage_rate"), "pct")]))
+    out += ["", "校正と選ばれた比率", "", "| 時点 | 現行ECE | 線形 | Brier対応 | 対数線形 | 現行の本命見込み | 線形のAI重み "
+            "| Brier対応のAI重み | 対数線形の指数(AI/市場) | 審査資格(線形/Brier対応/対数線形) |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+    for tp, label in POINTS:
+        dep, cands = scores(tp)
+        out.append(_row([label, _num(_get(dep, "calibration", "ece_10bin"))]
+                        + [_num(_get(c, "calibration", "ece_10bin")) for c in cands]
+                        + [_num(_get(dep, "calibration", "top1_mean_prob"), "pct"),
+                           _num(_get(runs["linear"], tp, "mean_ai_weight")), _num(_get(runs["brier"], tp, "mean_ai_weight")),
+                           f"{_num(_get(runs['loglinear'], tp, 'mean_ai_exponent'))} / "
+                           f"{_num(_get(runs['loglinear'], tp, 'mean_market_exponent'))}",
+                           " / ".join(_num(_get(runs[k], tp, "promotion_gate", "eligible_for_review")) for k in names)]))
+    out += ["", "単独モデル(同じ将来評価レース)", "", "| 時点 | AI単独LL | 市場単独LL | 従来合成LL | AI単独的中 | 市場単独的中 |",
+            "|---|---:|---:|---:|---:|---:|"]
+    for tp, label in POINTS:
+        s = _get(runs["linear"], tp, "scores_on_same_forward_test_races") or {}
+        out.append(_row([label, _num(_get(s, "ai", "log_loss")), _num(_get(s, "market", "log_loss")),
+                         _num(_get(s, "blend", "log_loss")), _num(_get(s, "ai", "top1_hit"), "pct"),
+                         _num(_get(s, "market", "top1_hit"), "pct")]))
     return out
 
 
@@ -101,7 +124,9 @@ def summarize(reports) -> str:
         reports = [reports]
     lines = ["## 発走前予測の評価(集計値のみ)", "",
              "LL・Brier・ECE は低いほど良い。改善率は現行(実際に使った確率)比で、正なら候補が良い。"
-             "ROI は本命の単勝を100円ずつ買ったとする参考値。区間は開催日単位の95%区間(10日未満は -)。", ""]
+             "ROI は本命の単勝を100円ずつ買ったとする参考値。区間は開催日単位の95%区間(10日未満は -)。", "",
+             "研究候補: 線形 = α×AI+(1−α)×市場 / Brier対応 = 線形で LogLoss+0.25×Brier を最小化 / "
+             "対数線形 = AI^a×市場^b を正規化(本番の合成と同じ形)。どれも比率は前日までの結果だけで選ぶ。", ""]
     for report in reports:
         org = report.get("org") if isinstance(report, dict) else None
         if org not in ORGS:
