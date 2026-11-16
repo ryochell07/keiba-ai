@@ -164,6 +164,45 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
     }
 
 
+
+def compare_shadow_summaries(logloss: dict, brier: dict) -> dict:
+    """同じ未来評価母集団に限り、Brier対応候補と従来研究候補を比較する。
+
+    集計差は探索用の記述統計。日付ブロックCI・本番採用の根拠ではない。
+    """
+    result = {}
+    for tp in POINTS:
+        left, right = logloss[tp], brier[tp]
+        n = left["forward_test_races"]
+        if (n != right["forward_test_races"]
+                or left["forward_test_days"] != right["forward_test_days"]):
+            raise ValueError("shadow candidates must share the same forward test set")
+        old = left["scores_on_same_forward_test_races"].get("candidate", {})
+        new = right["scores_on_same_forward_test_races"].get("candidate", {})
+        if old.get("n_races", 0) != n or new.get("n_races", 0) != n:
+            raise ValueError("shadow comparison has inconsistent scored race counts")
+        if not n:
+            result[tp] = {"n_races": 0, "n_days": 0,
+                          "log_loss_delta": None, "brier_delta": None,
+                          "top1_roi_delta": None}
+            continue
+        # 負値ならBrier対応候補が改善。ROIは双方の払戻確認数が一致する場合のみ比較。
+        roi_ok = (old.get("top1_roi_races") == new.get("top1_roi_races")
+                  and old.get("top1_roi") is not None
+                  and new.get("top1_roi") is not None)
+        result[tp] = {
+            "n_races": n,
+            "n_days": left["forward_test_days"],
+            "log_loss_delta": float(new["log_loss"] - old["log_loss"]),
+            "brier_delta": float(new["brier"] - old["brier"]),
+            "top1_roi_delta": (
+                float(new["top1_roi"] - old["top1_roi"]) if roi_ok else None
+            ),
+            "note": "負の損失差は新候補が優位。探索的比較であり採用判定や将来収益の証明ではない",
+        }
+    return result
+
+
 def _probabilities_valid(rows: list[sqlite3.Row], col: str) -> bool:
     ps = [h[col] for h in rows]
     return (bool(ps) and all(v is not None and np.isfinite(v) and 0 <= v <= 1 for v in ps)
@@ -207,21 +246,18 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
             "blend": {h["umaban"]: h["p_win_blend"] for h in rows},
             "used": {h["umaban"]: h["p_win_used"] for h in rows},
         })
+    legacy = {tp: walk_forward_blend(items[tp], min_history=min_history)
+              for tp in POINTS}
+    challenger = {tp: walk_forward_blend(items[tp], min_history=min_history,
+                                       brier_weight=0.25)
+                  for tp in POINTS}
     return {
         "org": org,
         "method": "AI確率と同時刻市場確率の凸結合。過去の開催日だけで0〜1の重みを0.05刻みで選び、その翌日以降を逐次検証。市場オッズが不完全な場合は評価対象外",
-        "by_time_point": {
-            tp: walk_forward_blend(items[tp], min_history=min_history)
-            for tp in POINTS
-        },
-        # 別候補も同じ過去日だけで訓練し、同じ未来レース集合で測定。
-        # 本番・採用済み確率・台帳には影響させない。
+        "by_time_point": legacy,
         "brier_regularized_challenger": {
             "brier_weight": 0.25,
-            "by_time_point": {
-                tp: walk_forward_blend(items[tp], min_history=min_history,
-                                       brier_weight=0.25)
-                for tp in POINTS
-            },
+            "by_time_point": challenger,
         },
+        "challenger_minus_legacy": compare_shadow_summaries(legacy, challenger),
     }
