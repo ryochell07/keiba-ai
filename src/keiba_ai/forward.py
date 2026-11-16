@@ -215,6 +215,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         counts["paired_coverage_rate"] = counts["paired_scored"] / n if n else None
         counts["odds_eligible_rate"] = counts["fresh_complete_odds"] / n if n else None
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
+              "legacy_ev_basis_note": "rows の odds_basis=cutoff は既存互換ラベル。実際はレースごとの発走前最終予測であり、必ずしも発走10分前のオッズではない。発走前・同時刻・60分以内の条件を満たす場合のみEVを集計する。",
               "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。統計的有意性や将来の回収率を保証しない",
                                           "by_time_point": comparisons},
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
