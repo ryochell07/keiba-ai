@@ -161,6 +161,13 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             delta and delta.get("brier")
             and delta["brier"][1] <= 0
         ),
+        # 払戻が欠損したレースだけを除いてROIを比較すると選択バイアスが
+        # 起きうるため、レビュー資格には未来評価集合の払戻完備を要求する。
+        "complete_forward_payout_coverage": bool(
+            n > 0
+            and candidate_stats.get("top1_roi_races") == n
+            and deployed_stats.get("top1_roi_races") == n
+        ),
         "top1_roi_not_worse_on_verified_results": bool(
             candidate_stats.get("top1_roi_races", 0) >= 300
             and candidate_stats.get("top1_roi") is not None
