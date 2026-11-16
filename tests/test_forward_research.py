@@ -145,3 +145,27 @@ def test_challenger_comparison_rejects_different_evaluation_sizes():
             {"t30": legacy, "t10": legacy, "last": legacy},
             {"t30": mismatch, "t10": mismatch, "last": mismatch},
         )
+
+
+def test_challenger_comparison_rejects_different_race_ids_at_same_size():
+    # レース数・開催日数が同じでも、異なるレースは比較しない。
+    original = [_record(d, r) for d in range(1, 6) for r in range(25)]
+    changed = [_record(d, r) for d in range(1, 6) for r in range(25)]
+    changed[-1] = {**changed[-1], "race_id": "different-race-at-same-date"}
+    legacy = walk_forward_blend(original, min_history=50)
+    challenger = walk_forward_blend(changed, min_history=50, brier_weight=0.25)
+    assert legacy["forward_test_races"] == challenger["forward_test_races"]
+    assert legacy["forward_test_days"] == challenger["forward_test_days"]
+    with pytest.raises(ValueError, match="same forward test set"):
+        compare_shadow_summaries(
+            {"t30": legacy, "t10": legacy, "last": legacy},
+            {"t30": challenger, "t10": challenger, "last": challenger},
+        )
+
+
+def test_private_comparison_token_is_not_plain_race_id():
+    rows = [_record(d, r) for d in range(1, 4) for r in range(25)]
+    result = walk_forward_blend(rows, min_history=50)
+    token = result["_comparison_token"]
+    assert len(token) == 64
+    assert all(r["race_id"] not in token for r in rows)
