@@ -20,6 +20,8 @@
 
 - `excluded_runs_without_verified_prestart_time`: 発走予定時刻が欠ける・形式が不正・予測が発走予定時刻以降など、**発走前だったことを検証できない**予測履歴の除外件数。予測時刻・発走時刻はタイムゾーン付き日時として比較し、同時点内の選択も実際の時系列で行う
 - `by_time_point.*.used_all_races`: 実際に利用・表示した `p_win_used` のLogLoss/Brier/的中率。選択された予測はオッズが不完全でも評価可能なため、AI/市場/合成の**同条件比較**とは母数が異なる可能性がある
+- `by_time_point.*.*.top1_roi_races` / `payout_coverage_rate`: 勝ち馬の単勝払戻データが取得済みのレース数と、そのレース数を精度評価可能数で割った比率。**着順は取れても払戻が未取得なら、回収額を0円と置かずROI算出の母数から除外**する。対象が0レースなら `top1_roi=null`。誤って高い回収率と受け取らないよう、常にカバー率と併記する
+- `ev100_roi`: EV条件を満たしていても、勝ち馬の払戻が確認できないレースはベット件数・払戻を集計しない。未取得払戻と不的中は区別する。
 - `evaluation_coverage.by_time_point.*.used_model_counts`: `ai` / `market` / `blend` / その他として、どの予測方式を**採用したか**の件数。採用件数と評価可能件数は区別する
 - `evaluation_coverage.by_time_point.*.deployed_scored`: 採用した確率ベクトルが妥当で、着順と照合できたレース数
 - `evaluation_coverage.by_time_point.*.selected_runs`: 各時点で選択された発走前予測
