@@ -188,3 +188,20 @@ def test_latest_odds_excludes_final_flagged_timestamp_from_prestart_quotes():
     with_final = latest_odds(con, "r", at, include_final=True)
     assert with_final[("win", "1")]["odds"] == 2.0
     assert with_final[("win", "2")]["odds"] == 5.0
+
+
+def test_forward_rejects_invalid_probability_vectors():
+    import math
+    from keiba_ai.forward import _score
+
+    base = [
+        {"umaban": 1, "p_win_ai": 0.6, "win_odds": 2.0},
+        {"umaban": 2, "p_win_ai": 0.4, "win_odds": 3.0},
+    ]
+    assert _score(base, "p_win_ai", {1: 1, 2: 2}, {}) is not None
+    for invalid in (float("nan"), float("inf"), -0.1, 1.1, None):
+        bad = [{**base[0], "p_win_ai": invalid}, base[1]]
+        assert _score(bad, "p_win_ai", {1: 1, 2: 2}, {}) is None
+    assert _score([{**base[0], "p_win_ai": 0.5}, base[1]],
+                  "p_win_ai", {1: 1, 2: 2}, {}) is None
+    assert _score([], "p_win_ai", {1: 1}, {}) is None
