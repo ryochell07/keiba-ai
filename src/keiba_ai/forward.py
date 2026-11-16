@@ -42,6 +42,24 @@ def _stats(rows: list[dict]) -> dict:
             "top1_roi": float(sum(x["ret"] for x in rows) / (100 * len(rows))), "ev100_bets": n_ev, "ev100_roi": float(sum(x["ev_ret"] for x in rows) / (100 * n_ev)) if n_ev else None}
 
 
+def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
+    """同じレース集合での平均LogLoss/Brier差。負の差は左側モデルが優位。"""
+    if not all(rows_by_model.get(k) for k in MODELS):
+        return {"n_races": 0}
+    n = len(rows_by_model["ai"])
+    if any(len(rows_by_model[k]) != n for k in MODELS):
+        raise ValueError("paired comparison requires equal race counts")
+    result = {"n_races": n}
+    for left, right in (("ai", "market"), ("blend", "market"), ("blend", "ai")):
+        a, b = rows_by_model[left], rows_by_model[right]
+        result[f"{left}_minus_{right}"] = {
+            "log_loss": float(np.mean([x["ll"] - y["ll"] for x, y in zip(a, b)])),
+            "brier": float(np.mean([x["brier"] - y["brier"] for x, y in zip(a, b)])),
+            "top1_hit_rate": float(np.mean([x["hit"] - y["hit"] for x, y in zip(a, b)])),
+        }
+    return result
+
+
 def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay: dict[str, int], odds_col: str = "win_odds", odds: dict[int, float] | None = None, *, evaluate_ev: bool = True) -> dict | None:
     ps = {h["umaban"]: h[col] for h in horses}
     if any(v is None for v in ps.values()):
@@ -188,7 +206,14 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
                      m["roi"], m["roi_ci_low"], m["roi_ci_high"], basis, json.dumps({"max_drawdown": m["max_drawdown"]})))
         out_rows.append({"strategy": strategy, "bet_type": bet, "odds_basis": basis, **m})
     con.commit()
+    comparisons = {tp: _paired_comparison(tp_rows[tp]) for tp in TIME_POINTS}
+    for tp, counts in eligibility.items():
+        n = counts["selected_runs"]
+        counts["paired_coverage_rate"] = counts["paired_scored"] / n if n else None
+        counts["odds_eligible_rate"] = counts["fresh_complete_odds"] / n if n else None
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
+              "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。統計的有意性や将来の回収率を保証しない",
+                                          "by_time_point": comparisons},
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
               "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、オッズは全頭同時刻・予測時点60分以内・発走前のみ",
                                       "by_time_point": eligibility},
