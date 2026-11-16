@@ -1,5 +1,7 @@
 """暗号化ReleaseのDBを本番に復元せず、隔離一時領域のみで評価する。架空データを使用。"""
 import io
+import json
+import os
 import sqlite3
 import tarfile
 import tempfile
@@ -53,12 +55,16 @@ def test_encrypted_release_is_evaluated_without_touching_production_or_leaving_p
         return instance
 
     monkeypatch.setattr(tempfile, "TemporaryDirectory", tmp_factory)
+    output_path = tmp_path / "private-results.json"
     assert main(["reconcile", "--org", "NAR", "--read-only",
-                 "--encrypted-state", str(state)]) == 0
-    output = capsys.readouterr().out
-    assert '"org": "NAR"' in output
-    assert '"n_races": 0' in output
+                 "--encrypted-state", str(state), "--output", str(output_path)]) == 0
+    assert capsys.readouterr().out == ""  # 公開Actionsログに集計を流さない
+    output = output_path.read_text(encoding="utf-8")
+    summary = json.loads(output)
+    assert summary["org"] == "NAR"
+    assert summary["n_races"] == 0
     assert key.hex() not in output
+    assert (output_path.stat().st_mode & 0o777) == 0o600
     assert len(paths) == 1 and not paths[0].exists()
     assert not config.DB_PATH.exists()
     assert not config.REPORTS.exists()
@@ -72,7 +78,7 @@ def test_encrypted_release_wrong_key_fails_closed_without_writing_database(
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "must-not-exist.sqlite")
     with pytest.raises(ValueError, match="復号に失敗"):
         main(["reconcile", "--org", "NAR", "--read-only",
-              "--encrypted-state", str(state)])
+              "--encrypted-state", str(state), "--output", str(tmp_path / "private.json")])
     assert not config.DB_PATH.exists()
 
 
@@ -82,3 +88,29 @@ def test_encrypted_release_option_requires_readonly(tmp_path, monkeypatch):
         main(["reconcile", "--encrypted-state", str(tmp_path / "any.enc")])
     assert exc.value.code == 2
     assert not config.DB_PATH.exists()
+
+
+def test_encrypted_release_requires_explicit_private_output_path(tmp_path, monkeypatch):
+    state = _make_encrypted_state(tmp_path, bytes.fromhex("11" * 32))
+    monkeypatch.setenv("KEIBA_STATE_KEY", "11" * 32)
+    with pytest.raises(SystemExit) as exc:
+        main(["reconcile", "--read-only", "--org", "NAR",
+              "--encrypted-state", str(state)])
+    assert exc.value.code == 2
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_encrypted_release_refuses_repo_output_and_overwriting(tmp_path, monkeypatch):
+    state = _make_encrypted_state(tmp_path, bytes.fromhex("11" * 32))
+    monkeypatch.setenv("KEIBA_STATE_KEY", "11" * 32)
+    private = tmp_path / "existing.json"
+    private.write_text("ORIGINAL", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        main(["reconcile", "--read-only", "--org", "NAR", "--encrypted-state",
+              str(state), "--output", str(private)])
+    assert private.read_text(encoding="utf-8") == "ORIGINAL"
+    unsafe = config.ROOT / "evaluation-result-must-not-be-created.json"
+    with pytest.raises(ValueError, match="公開リポジトリ"):
+        main(["reconcile", "--read-only", "--org", "NAR", "--encrypted-state",
+              str(state), "--output", str(unsafe)])
+    assert not unsafe.exists()
