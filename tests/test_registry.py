@@ -151,6 +151,36 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     assert counts["odds_snapshot_mismatch"] == 0
     assert counts["n_model_versions"] == 1
     assert counts["mixed_model_versions"] is False
+    assert out["n_races_with_selected_prestart_run"] == 1
+    # 結果の一部欠損、後から分かった出走取消、同着1着は単一正解として採点しない
+    original = con.execute(
+        "SELECT finish_pos, status FROM result WHERE race_id=? AND umaban=?",
+        (r.race_id, other),
+    ).fetchone()
+    assert original is not None
+    con.execute("DELETE FROM result WHERE race_id=? AND umaban=?", (r.race_id, other))
+    missing_result = reconcile(con, "JRA")
+    mc = missing_result["evaluation_coverage"]["by_time_point"]["morning"]
+    assert mc["incomplete_results"] == 1
+    assert mc["ai_scored"] == 0 and mc["deployed_scored"] == 0
+    assert missing_result["n_races"] == 0
+    con.execute(
+        "INSERT INTO result(race_id, umaban, finish_pos, status) VALUES (?,?,?,?)",
+        (r.race_id, other, original["finish_pos"], original["status"]),
+    )
+    con.execute("UPDATE result SET status='scratched', finish_pos=NULL WHERE race_id=? AND umaban=?",
+                (r.race_id, other))
+    withdrawn = reconcile(con, "JRA")
+    assert withdrawn["evaluation_coverage"]["by_time_point"]["morning"]["runner_set_mismatch"] == 1
+    assert withdrawn["evaluation_coverage"]["by_time_point"]["morning"]["paired_scored"] == 0
+    con.execute("UPDATE result SET status=?, finish_pos=1 WHERE race_id=? AND umaban=?",
+                (original["status"], r.race_id, other))
+    dead_heat = reconcile(con, "JRA")
+    assert dead_heat["evaluation_coverage"]["by_time_point"]["morning"]["multiple_or_missing_winners"] == 1
+    assert dead_heat["by_time_point"] == {}
+    con.execute("UPDATE result SET status=?, finish_pos=? WHERE race_id=? AND umaban=?",
+                (original["status"], original["finish_pos"], r.race_id, other))
+    assert reconcile(con, "JRA")["n_races"] == 1
     # 元オッズ履歴と台帳が食い違えば、市場比較・購入可能EVから除外する
     con.execute("""UPDATE odds_snapshot SET odds=odds+0.5
                    WHERE race_id=? AND bet_type='win' AND is_final=0
