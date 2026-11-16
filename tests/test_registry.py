@@ -180,6 +180,15 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     assert dead_heat["by_time_point"] == {}
     con.execute("UPDATE result SET status=?, finish_pos=? WHERE race_id=? AND umaban=?",
                 (original["status"], original["finish_pos"], r.race_id, other))
+    # 1着の着順だけ欠損したレースを母数から「なかったこと」にしない。
+    con.execute("UPDATE result SET finish_pos=NULL WHERE race_id=? AND umaban=?", (r.race_id, winner))
+    no_winner = reconcile(con, "JRA")
+    nc = no_winner["evaluation_coverage"]["by_time_point"]["morning"]
+    assert nc["selected_runs"] == 1
+    assert nc["multiple_or_missing_winners"] == 1
+    assert no_winner["n_races_with_selected_prestart_run"] == 1
+    assert no_winner["n_races"] == 0
+    con.execute("UPDATE result SET finish_pos=1 WHERE race_id=? AND umaban=?", (r.race_id, winner))
     assert reconcile(con, "JRA")["n_races"] == 1
     # 元オッズ履歴と台帳が食い違えば、市場比較・購入可能EVから除外する
     con.execute("""UPDATE odds_snapshot SET odds=odds+0.5
