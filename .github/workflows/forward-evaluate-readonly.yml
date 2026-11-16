@@ -64,14 +64,26 @@ jobs:
           fi
           case "$EVAL_ORG" in BOTH|NAR|JRA) ;; *) exit 2 ;; esac
           workdir="$RUNNER_TEMP/keiba-eval"
-          trap 'rm -f "$RUNNER_TEMP/keiba-eval/metrics.json" "$RUNNER_TEMP/keiba-eval/keiba-state.enc"' EXIT
+          trap 'rm -f "$workdir/metrics.json" "$workdir/keiba-state.enc" "$workdir/evaluation.stdout" "$workdir/evaluation.stderr" "$workdir/encryption.stdout" "$workdir/encryption.stderr"' EXIT
           args=(reconcile --read-only --encrypted-state "$workdir/keiba-state.enc" \
                 --output "$workdir/metrics.json")
           if [ "$EVAL_ORG" != BOTH ]; then args+=(--org "$EVAL_ORG"); fi
-          .venv/bin/keiba "${args[@]}"
+          # エラーのtracebackにも馬別情報が混ざり得るため、成功・失敗とも非公開に。
+          rc=0
+          .venv/bin/keiba "${args[@]}" > "$workdir/evaluation.stdout" 2> "$workdir/evaluation.stderr" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::読み取り専用評価に失敗しました（詳細は公開ログに出力しません）"
+            exit "$rc"
+          fi
+          rc=0
           .venv/bin/python -m keiba_ai.eval_artifact encrypt \
             --input "$workdir/metrics.json" \
-            --output "$RUNNER_TEMP/forward-evaluation.enc"
+            --output "$RUNNER_TEMP/forward-evaluation.enc" \
+            > "$workdir/encryption.stdout" 2> "$workdir/encryption.stderr" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::評価結果の暗号化に失敗しました（詳細は公開ログに出力しません）"
+            exit "$rc"
+          fi
           echo "読み取り専用の集計と暗号化を完了（成績はログ非表示）"
 
       - name: Upload encrypted artifact only
@@ -88,3 +100,5 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/forward-evaluation.enc"
           rm -f "$RUNNER_TEMP/keiba-eval/metrics.json" "$RUNNER_TEMP/keiba-eval/keiba-state.enc"
+          rm -f "$RUNNER_TEMP/keiba-eval/evaluation.stdout" "$RUNNER_TEMP/keiba-eval/evaluation.stderr"
+          rm -f "$RUNNER_TEMP/keiba-eval/encryption.stdout" "$RUNNER_TEMP/keiba-eval/encryption.stderr"
