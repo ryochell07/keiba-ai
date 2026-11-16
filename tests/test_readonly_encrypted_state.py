@@ -25,6 +25,8 @@ def _make_encrypted_state(tmp_path: Path, key: bytes) -> Path:
             CREATE TABLE result (race_id TEXT, umaban INTEGER, finish_pos INTEGER);
             CREATE TABLE odds_snapshot (race_id TEXT, bet_type TEXT, combo TEXT,
                                         captured_at TEXT, odds REAL, is_final INTEGER);
+            CREATE TABLE model_version (model_version_id TEXT, org TEXT, status TEXT,
+                                        adopted_at TEXT);
             INSERT INTO race VALUES ('r','NAR','2030-03-02','10:30');
             INSERT INTO race VALUES ('r-jra','JRA','2030-03-02','10:30');
         """)
@@ -208,6 +210,7 @@ def test_research_flag_keeps_encrypted_evaluation_readonly(tmp_path, monkeypatch
                  "--encrypted-state", str(state), "--output", str(path)]) == 0
     result = json.loads(path.read_text(encoding="utf-8"))
     assert result["shadow_research"]["by_time_point"]["t30"]["forward_test_races"] == 0
+    assert result["shadow_research"]["current_model_only"] is None  # 採用中の版がない
     assert capsys.readouterr().out == ""
     assert not config.DB_PATH.exists()
 

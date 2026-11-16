@@ -333,12 +333,47 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
         )}
         items[tp].append({
             "race_id": race_id, "race_date": run["race_date"],
+            "model_version_id": run["model_version_id"],
             "winner": winners[0], "payout": payout,
             "ai": {h["umaban"]: h["p_win_ai"] for h in rows},
             "market": {h["umaban"]: h["p_win_market"] for h in rows},
             "blend": {h["umaban"]: h["p_win_blend"] for h in rows},
             "used": {h["umaban"]: h["p_win_used"] for h in rows},
         })
+    legacy, challenger, comparison = _shadow_block(items, min_history)
+    # 再学習でAIの版が変わると、古い版の成績で選んだ重みを新しい版に当てることになる。
+    # 採用中の版だけで同じ評価をやり直し、版の混在による見かけの差と区別する。
+    active = con.execute(
+        "SELECT model_version_id FROM model_version WHERE org=? AND status='active' "
+        "ORDER BY adopted_at DESC LIMIT 1", (org,)
+    ).fetchone()
+    current = None
+    if active is not None:
+        same = {tp: [x for x in items[tp] if x["model_version_id"] == active[0]] for tp in POINTS}
+        c_legacy, c_challenger, c_comparison = _shadow_block(same, min_history)
+        current = {
+            "by_time_point": c_legacy,
+            "brier_regularized_challenger": {"brier_weight": 0.25, "by_time_point": c_challenger},
+            "challenger_minus_legacy": c_comparison,
+        }
+    return {
+        "org": org,
+        "method": "AI確率と同時刻市場確率の凸結合。過去の開催日だけで0〜1の重みを0.05刻みで選び、その翌日以降を逐次検証。市場オッズが不完全な場合は評価対象外",
+        "model_versions_in_valid_races": {
+            tp: len({x["model_version_id"] for x in items[tp]}) for tp in POINTS
+        },
+        "by_time_point": legacy,
+        "brier_regularized_challenger": {
+            "brier_weight": 0.25,
+            "by_time_point": challenger,
+        },
+        "challenger_minus_legacy": comparison,
+        "current_model_only": current,
+    }
+
+
+def _shadow_block(items: dict[str, list[dict]], min_history: int) -> tuple[dict, dict, dict]:
+    """従来の研究候補とBrier対応候補を同じ将来評価集合で比べ、内部の照合値を除いて返す。"""
     legacy = {tp: walk_forward_blend(items[tp], min_history=min_history,
                                      include_private=True)
               for tp in POINTS}
@@ -350,13 +385,4 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
     for summary in (*legacy.values(), *challenger.values()):
         summary.pop("_comparison_token", None)
         summary.pop("_candidate_scored_rows", None)
-    return {
-        "org": org,
-        "method": "AI確率と同時刻市場確率の凸結合。過去の開催日だけで0〜1の重みを0.05刻みで選び、その翌日以降を逐次検証。市場オッズが不完全な場合は評価対象外",
-        "by_time_point": legacy,
-        "brier_regularized_challenger": {
-            "brier_weight": 0.25,
-            "by_time_point": challenger,
-        },
-        "challenger_minus_legacy": comparison,
-    }
+    return legacy, challenger, comparison

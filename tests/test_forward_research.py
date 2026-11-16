@@ -334,9 +334,8 @@ def test_shadow_challenger_roi_ci_uses_complete_paired_results():
     assert summary["candidate_minus_legacy_roi_ci95"] == pytest.approx([0.0, 0.0])
 
 
-def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch):
-    """DBの問合せ境界から研究候補の評価・公開集計までを結合確認する。"""
-    import json
+def _shadow_report(monkeypatch, version_of_day):
+    """DBの問合せ境界を模した接続で evaluate_shadow を動かす。採用中の版は m-new。"""
     from keiba_ai import forward_research as research
 
     records = [_record(day, race) for day in range(1, 6) for race in range(25)]
@@ -347,6 +346,7 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
             selected[(rec["race_id"], point)] = {
                 "race_date": rec["race_date"],
                 "prediction_id": prediction_id,
+                "model_version_id": version_of_day(int(rec["race_date"][-2:])),
                 "odds_status": "complete",
                 "odds_same_time": 1,
                 "odds_captured_at": "2030-04-01T12:00:00+09:00",
@@ -356,10 +356,15 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
         def fetchall(self):
             return list(self)
 
+        def fetchone(self):
+            return self[0] if self else None
+
     class FakeReadonlyConnection:
         def execute(self, query, params=()):
             if "FROM prediction_run" in query:
                 return QueryResult([])
+            if "FROM model_version" in query:
+                return QueryResult([("m-new",)])
             if "FROM prediction_horse" in query:
                 return QueryResult([
                     {"umaban": 1, "p_win_ai": .9, "p_win_market": .2,
@@ -380,16 +385,49 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
     monkeypatch.setattr(research, "_fresh_prestart_odds", lambda run: True)
     monkeypatch.setattr(research, "_win_odds_same_time",
                         lambda con, race_id, rows, captured: True)
+    return research.evaluate_shadow(FakeReadonlyConnection(), "NAR"), records
 
-    report = research.evaluate_shadow(FakeReadonlyConnection(), "NAR")
+
+def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch):
+    """DBの問合せ境界から研究候補の評価・公開集計までを結合確認する。"""
+    import json
+    from keiba_ai import forward_research as research
+
+    report, records = _shadow_report(monkeypatch, lambda day: "m-new")
     for point in research.POINTS:
         assert report["by_time_point"][point]["forward_test_races"] == 75
         assert (report["brier_regularized_challenger"]["by_time_point"][point]
                 ["forward_test_races"] == 75)
         assert report["challenger_minus_legacy"][point]["n_races"] == 75
 
+        # 版が1つなら、採用中の版だけの評価も同じ集合になる
+        assert report["model_versions_in_valid_races"][point] == 1
+        assert report["current_model_only"]["by_time_point"][point]["forward_test_races"] == 75
+
     encoded = json.dumps(report, ensure_ascii=False)
     assert "_candidate_scored_rows" not in encoded
     assert "_comparison_token" not in encoded
     assert "race_id" not in encoded
     assert all(rec["race_id"] not in encoded for rec in records)
+
+
+def test_evaluate_shadow_separates_current_model_from_mixed_versions(monkeypatch):
+    """途中で再学習した場合、採用中の版だけで重みを選び直した評価を別に出す。"""
+    import json
+    from keiba_ai import forward_research as research
+
+    report, _ = _shadow_report(monkeypatch, lambda day: "m-old" if day <= 2 else "m-new")
+    for point in research.POINTS:
+        assert report["model_versions_in_valid_races"][point] == 2
+        # 全体: 1〜2日目で学習し、3〜5日目を検証
+        assert report["by_time_point"][point]["forward_test_races"] == 75
+        current = report["current_model_only"]
+        # 採用中の版だけ: 3〜4日目で学習し、5日目だけを検証。古い版の成績は使わない
+        assert current["by_time_point"][point]["forward_test_races"] == 25
+        assert current["by_time_point"][point]["forward_test_days"] == 1
+        assert (current["brier_regularized_challenger"]["by_time_point"][point]
+                ["forward_test_races"] == 25)
+        assert current["challenger_minus_legacy"][point]["n_races"] == 25
+    encoded = json.dumps(report, ensure_ascii=False)
+    assert "m-old" not in encoded and "m-new" not in encoded
+    assert "_candidate_scored_rows" not in encoded
