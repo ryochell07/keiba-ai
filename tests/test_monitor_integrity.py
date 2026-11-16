@@ -73,3 +73,20 @@ def test_capture_quality_excludes_nonpositive_and_poststart_values():
     assert out["t10_rate"] == 0
     assert out["n_snapshots"] == 0
     assert out["missing_rate"] == pytest.approx(0.5)
+
+
+def test_capture_quality_rejects_extra_positive_cancelled_horse():
+    con = _db()
+    con.execute("INSERT INTO race VALUES ('r','JRA','2030-03-02','10:30','05')")
+    con.executemany("INSERT INTO entry VALUES ('r',?)", [(u,) for u in (1, 2, 3)])
+    con.execute("INSERT INTO result VALUES ('r',3,'scratched')")
+    # 発走馬の1・2番が揃っても、同じ取得時刻に取消馬3番の正オッズが
+    # 残っていれば正しい確率の分母を保証できない。
+    _record_odds(con, "r", "2030-03-02T10:16:00+09:00", [1, 2, 3])
+    out = odds_quality(con, "2030-03-02", "JRA",
+                       now=datetime.fromisoformat("2030-03-02T11:00:00+09:00"))
+    assert out["any_rate"] == 0
+    assert out["t10_rate"] == 0
+    assert out["n_snapshots"] == 0
+    # 有効馬への価格の欠損率はゼロでも、正しい出走馬集合ではないため除外。
+    assert out["missing_rate"] == 0
