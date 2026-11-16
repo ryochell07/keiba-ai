@@ -77,6 +77,27 @@ def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay:
             "ev_n": len(ev), "ev_ret": sum(pay.get(str(u), 0) for u in ev)}
 
 
+def _win_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sqlite3.Row], captured_at: str | None) -> bool:
+    """台帳の単勝オッズが、同一時刻の実際の非確定スナップショットと全頭一致することを検証。"""
+    if not captured_at or not horses:
+        return False
+    rows = con.execute(
+        """SELECT combo,odds FROM odds_snapshot
+           WHERE race_id=? AND bet_type='win' AND captured_at=? AND is_final=0""",
+        (race_id, captured_at),
+    ).fetchall()
+    available = {str(r["combo"]): r["odds"] for r in rows if r["odds"] is not None and np.isfinite(r["odds"]) and r["odds"] > 0}
+    return all(
+        h["odds_captured_at"] == captured_at
+        and h["win_odds"] is not None
+        and np.isfinite(h["win_odds"])
+        and h["win_odds"] > 0
+        and str(h["umaban"]) in available
+        and abs(available[str(h["umaban"])] - h["win_odds"]) < 1e-9
+        for h in horses
+    )
+
+
 def _place_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sqlite3.Row], captured_at: str | None) -> bool:
     """複勝EVは単勝と同一取得時刻の複勝オッズが全頭そろう場合のみ評価する。"""
     if not captured_at or not horses:
@@ -141,7 +162,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         if ai_all:
             tp_rows[tp]["ai_all_races"].append(ai_all)
             eligibility[tp]["ai_scored"] += 1
-        if _fresh_prestart_odds(run):
+        if _fresh_prestart_odds(run) and _win_odds_same_time(con, rid, horses, run["odds_captured_at"]):
             eligibility[tp]["fresh_complete_odds"] += 1
             scores = {m: _score(horses, c, fin, pay) for m, c in MODELS.items()}
             if all(scores.values()):
@@ -151,7 +172,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         # 確定オッズは別枠。全頭の確定オッズがそろうレースだけ
         fo = finals.get(rid, {})
         um = [h["umaban"] for h in horses]
-        if ai_all and fo and all(u in fo for u in um):
+        if ai_all and fo and all(u in fo and fo[u] is not None and np.isfinite(fo[u]) and fo[u] > 0 for u in um):
             tot = sum(1 / fo[u] for u in um)
             mk = {u: (1 / fo[u]) / tot for u in um}
             winners = [u for u in um if fin.get(u) == 1]
@@ -183,7 +204,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
             top = max(combos, key=combos.get)
             ledger.bet(("top1", bet, "none"), rid, pay.get(top, 0))
         # 同時刻・全頭の単勝オッズが確認できない予測は、購入可能なEVとして集計しない。
-        if not _fresh_prestart_odds(run):
+        if not _fresh_prestart_odds(run) or not _win_odds_same_time(con, rid, horses, run["odds_captured_at"]):
             continue
         for bet, col in (("win", "win_odds"), ("place", "place_odds")):
             if bet == "place" and not _place_odds_same_time(con, rid, horses, run["odds_captured_at"]):
@@ -219,7 +240,7 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
               "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。統計的有意性や将来の回収率を保証しない",
                                           "by_time_point": comparisons},
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
-              "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、オッズは全頭同時刻・予測時点60分以内・発走前のみ",
+              "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、オッズは全頭同時刻・元スナップショットと一致・予測時点60分以内・発走前のみ",
                                       "by_time_point": eligibility},
               "final_odds_reference": {"purchasable": False, "note": "確定オッズは発走後に確定する値で、購入時点の比較ではない",
                                        "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in final_rows.items() if d}}}
