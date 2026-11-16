@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   measure:
-    if: ${{ github.repository == 'ryochell07/keiba-ai' && github.ref == 'refs/heads/audit/forward-odds-eligibility' && github.event.head_commit.message == 'audit: one-time read-only research evaluation' }}
+    if: >-
+      ${{ github.repository == 'ryochell07/keiba-ai' && github.ref == 'refs/heads/audit/forward-odds-eligibility' && github.event.head_commit.message == 'audit: one-time read-only research evaluation' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
