@@ -46,19 +46,33 @@ def _best_alpha(history: list[dict], regularization: float = 0.002,
         raise ValueError("brier_weight must be a finite nonnegative number")
     ai = np.array([x["ai"][x["winner"]] for x in history], dtype=float)
     market = np.array([x["market"][x["winner"]] for x in history], dtype=float)
+    # Brierは混合比率alphaの二次関数。係数を一度だけ計算することで
+    # 21候補のたびに全頭データを走査する処理を避ける（計算式は同一）。
+    brier_constant = brier_linear = brier_quadratic = 0.0
+    if brier_weight:
+        for rec in history:
+            if set(rec["ai"]) != set(rec["market"]):
+                raise ValueError("AI and market runner sets must match")
+            for umaban, a in rec["ai"].items():
+                m = rec["market"][umaban]
+                diff = a - m
+                residual = m - float(umaban == rec["winner"])
+                brier_constant += residual * residual
+                brier_linear += 2 * residual * diff
+                brier_quadratic += diff * diff
+        scale = 1.0 / len(history)
+        brier_constant *= scale
+        brier_linear *= scale
+        brier_quadratic *= scale
+
     values = []
     for alpha in ALPHAS:
         p = np.clip(alpha * ai + (1 - alpha) * market, 1e-12, 1)
         loss = float(-np.log(p).mean())
         if brier_weight:
-            # 同一レースの全馬確率を用いた多クラスBrier。未来レースは含めない。
-            brier = []
-            for rec in history:
-                mixed = {u: alpha * rec["ai"][u] + (1 - alpha) * rec["market"][u]
-                         for u in rec["ai"]}
-                brier.append(sum((v - (u == rec["winner"])) ** 2
-                                 for u, v in mixed.items()))
-            loss += brier_weight * float(np.mean(brier))
+            brier = (brier_constant + alpha * brier_linear
+                     + alpha * alpha * brier_quadratic)
+            loss += brier_weight * brier
         values.append(loss + regularization * (alpha - 0.5) ** 2)
     return float(ALPHAS[int(np.argmin(values))])
 
