@@ -153,6 +153,22 @@ def _place_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sq
     )
 
 
+def _valid_prestart_run(run: sqlite3.Row) -> bool:
+    """発走予定時刻が明示され、予測時刻がその前である履歴だけを使う。
+
+    文字列の大小比較ではUTCオフセットが異なる場合に順序を誤るため、
+    必ずタイムゾーン付き日時に変換して比較する。
+    """
+    try:
+        predicted = datetime.fromisoformat(run["predicted_at"])
+        scheduled = datetime.fromisoformat(run["scheduled_post_at"])
+        return (predicted.tzinfo is not None and predicted.utcoffset() is not None
+                and scheduled.tzinfo is not None and scheduled.utcoffset() is not None
+                and predicted < scheduled)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool:
     """保存された予測に対し、同時刻・発走前・十分新しい単勝オッズだけをEVに使う。"""
     if run["odds_status"] != "complete" or not run["odds_same_time"]:
@@ -169,12 +185,16 @@ def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool
 
 def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_report: bool = True) -> dict:
     """発走前予測と結果を照合する。persist=False ならDBを変更せず、write_report=False ならファイルを作らない。"""
-    runs = con.execute(
+    candidates = con.execute(
         """SELECT p.*, r.race_date FROM prediction_run p
            JOIN race r ON r.race_id=p.race_id
-           WHERE p.org=? AND (p.scheduled_post_at IS NULL OR p.predicted_at<p.scheduled_post_at)
+           WHERE p.org=?
              AND EXISTS (SELECT 1 FROM result x WHERE x.race_id=p.race_id AND x.finish_pos=1)
            ORDER BY p.race_id, p.predicted_at, p.rowid""", (org,)).fetchall()
+    # 発走予定時刻の欠損や文字列のオフセット比較ミスを利用した、
+    # 実際には発走後の予測を「事前予測」と見なす事故を防ぐ。
+    runs = [run for run in candidates if _valid_prestart_run(run)]
+    invalid_prestart_runs = len(candidates) - len(runs)
     payouts: dict[tuple[str, str], dict[str, int]] = defaultdict(dict)
     if runs:
         for r in con.execute("SELECT p.race_id,p.bet_type,p.combo,p.amount FROM payout p JOIN race r USING(race_id) WHERE r.org=?", (org,)):
@@ -293,6 +313,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         counts["n_model_versions"] = len(model_versions[tp])
         counts["mixed_model_versions"] = len(model_versions[tp]) > 1
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
+              "excluded_runs_without_verified_prestart_time": invalid_prestart_runs,
               "legacy_ev_basis_note": "rows の odds_basis=cutoff は既存互換ラベル。実際はレースごとの発走前最終予測であり、必ずしも発走10分前のオッズではない。発走前・同時刻・60分以内の条件を満たす場合のみEVを集計する。",
               "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。区間は開催日単位の探索的ブートストラップで、統計的有意性・将来回収率を保証しない",
                                           "by_time_point": comparisons},
