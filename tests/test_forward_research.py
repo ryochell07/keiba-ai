@@ -169,3 +169,30 @@ def test_private_comparison_token_is_not_plain_race_id():
     token = result["_comparison_token"]
     assert len(token) == 64
     assert all(r["race_id"] not in token for r in rows)
+
+
+def test_challenger_difference_has_paired_cluster_ci_for_sufficient_days():
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    old = walk_forward_blend(rows, min_history=50)
+    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25)
+    comparison = compare_shadow_summaries(
+        {tp: old for tp in ("t30", "t10", "last")},
+        {tp: new for tp in ("t30", "t10", "last")},
+    )
+    ci = comparison["t30"]["candidate_minus_legacy_ci95"]
+    assert ci is not None
+    assert len(ci["log_loss"]) == 2
+    assert len(ci["brier"]) == 2
+    assert ci["log_loss"][0] <= comparison["t30"]["log_loss_delta"] <= ci["log_loss"][1]
+
+
+def test_challenger_difference_rejects_missing_private_paired_rows():
+    rows = [_record(d, r) for d in range(1, 5) for r in range(25)]
+    old = walk_forward_blend(rows, min_history=50)
+    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25)
+    new.pop("_candidate_scored_rows")
+    with pytest.raises(ValueError, match="same forward test set"):
+        compare_shadow_summaries(
+            {tp: old for tp in ("t30", "t10", "last")},
+            {tp: new for tp in ("t30", "t10", "last")},
+        )
