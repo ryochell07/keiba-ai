@@ -196,3 +196,40 @@ def test_challenger_difference_rejects_missing_private_paired_rows():
             {tp: old for tp in ("t30", "t10", "last")},
             {tp: new for tp in ("t30", "t10", "last")},
         )
+
+
+def test_brier_quadratic_optimizer_matches_bruteforce_objective():
+    import numpy as np
+
+    history = []
+    for index in range(30):
+        ai = {1: .1 + (index % 5) * .04, 2: .3, 3: .6 - (index % 5) * .04}
+        market = {1: .5, 2: .2 + (index % 3) * .05,
+                  3: .3 - (index % 3) * .05}
+        history.append({"ai": ai, "market": market,
+                        "winner": (index % 3) + 1})
+    for weight in (0.0, 0.25, 1.0, 3.0):
+        scores = []
+        for alpha in (i * .05 for i in range(21)):
+            ll, briers = [], []
+            for rec in history:
+                combined = {
+                    u: alpha * rec["ai"][u] + (1 - alpha) * rec["market"][u]
+                    for u in rec["ai"]
+                }
+                ll.append(-math.log(max(combined[rec["winner"]], 1e-12)))
+                briers.append(sum(
+                    (prob - (u == rec["winner"])) ** 2
+                    for u, prob in combined.items()
+                ))
+            scores.append(np.mean(ll) + weight * np.mean(briers)
+                          + .002 * (alpha - .5) ** 2)
+        expected = round(.05 * int(np.argmin(scores)), 2)
+        assert _best_alpha(history, brier_weight=weight) == pytest.approx(expected)
+
+
+def test_brier_optimizer_rejects_mismatching_runner_sets():
+    record = _record(1, 1)
+    record["market"] = {1: .2, 3: .8}
+    with pytest.raises(ValueError, match="runner sets"):
+        _best_alpha([record], brier_weight=.25)
