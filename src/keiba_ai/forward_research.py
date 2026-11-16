@@ -108,6 +108,12 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             candidate_stats and deployed_stats
             and candidate_stats["brier"] <= deployed_stats["brier"]
         ),
+        # 平均Brierだけでは開催日ごとの変動を隠す。レビュー資格は
+        # 開催日単位の95%区間でも悪化が否定できる場合だけ与える。
+        "brier_cluster_ci_not_worse": bool(
+            delta and delta.get("brier")
+            and delta["brier"][1] <= 0
+        ),
         "top1_roi_not_worse_on_verified_results": bool(
             candidate_stats.get("top1_roi_races", 0) >= 300
             and candidate_stats.get("top1_roi") is not None
