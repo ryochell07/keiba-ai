@@ -43,3 +43,23 @@ def test_place_ev_requires_matching_snapshot_for_every_horse():
     con.execute("UPDATE odds_snapshot SET odds=1.5 WHERE combo='1'")
     con.execute("DELETE FROM odds_snapshot WHERE combo='2'")
     assert not _place_odds_same_time(con, "r", horses, stamp)
+
+
+def test_fresh_odds_rejects_stale_future_and_poststart_quotes():
+    from keiba_ai.forward import _fresh_prestart_odds
+
+    base = {
+        "odds_status": "complete",
+        "odds_same_time": 1,
+        "predicted_at": "2030-03-02T10:00:00+09:00",
+        "scheduled_post_at": "2030-03-02T10:30:00+09:00",
+        "odds_captured_at": "2030-03-02T09:59:00+09:00",
+    }
+    assert _fresh_prestart_odds(base)
+    assert not _fresh_prestart_odds({**base, "odds_captured_at": "2030-03-02T08:59:00+09:00"})
+    assert not _fresh_prestart_odds({**base, "odds_captured_at": "2030-03-02T10:01:00+09:00"})
+    assert not _fresh_prestart_odds({**base, "odds_captured_at": "2030-03-02T10:31:00+09:00"})
+    assert not _fresh_prestart_odds({**base, "odds_status": "partial"})
+    assert not _fresh_prestart_odds({**base, "odds_same_time": 0})
+    assert not _fresh_prestart_odds({**base, "odds_captured_at": None})
+    assert not _fresh_prestart_odds({**base, "predicted_at": "2030-03-02T10:30:00+09:00"})
