@@ -18,6 +18,25 @@
 
 通常の `keiba reconcile` は従来どおり集計結果とファイルを更新します。既存の毎日の運用を変更することが今回の目的ではありません。
 
+## 暗号化Releaseを隔離復号して読み取り専用で評価する
+
+`keiba reconcile --read-only --encrypted-state FILE` は `KEIBA_STATE_KEY` を環境変数から読み、暗号化Releaseの `keiba.db` **だけ**をOSの権限制限付き一時ディレクトリで復号する。復元操作 `state.unpack` は呼ばず、本番の `data/keiba.db`・採用済みモデル・レポート・Releaseへは一切書き込まない。DBはSQLite `mode=ro&immutable=1` と `PRAGMA query_only=ON` で開き、一時データは処理の正常終了・例外終了時ともに削除する。ただし、プロセス強制終了・ホスト障害時の一時ファイル残存までは保証できないため、アクセス制限のある信頼済み環境で実行する。
+
+```bash
+# 信頼できる端末で、検証用ブランチをチェックアウトして依存関係をセットアップした後
+# KEIBA_STATE_KEY は安全な秘密情報管理から設定し、コマンド履歴や公開CIログに表示しない
+# 公開GitHub Releaseから暗号化済みファイルだけを取得（この時点では復号されない）
+gh release download state --repo ryochell07/keiba-ai --pattern keiba-state.enc --dir /path/to/private-workspace
+# 成績の集計値も非公開にしたい場合は、標準出力を権限制限したローカルファイルへ保存する
+umask 077
+.venv/bin/keiba reconcile --read-only --org NAR \
+  --encrypted-state /path/to/private-workspace/keiba-state.enc > /path/to/private-workspace/nar-evaluation.json
+.venv/bin/keiba reconcile --read-only --org JRA \
+  --encrypted-state /path/to/private-workspace/keiba-state.enc > /path/to/private-workspace/jra-evaluation.json
+```
+
+**運用上の重要事項：** ChatGPTや公開のIssue/PR/Actionsログに秘密鍵を貼らない。復号したDBをGitHubへアップロードしない。上記は利用者のローカル端末やアクセス制御された環境で実行する手順で、**現段階では実運用DBでの実行結果がない**。秘密鍵を利用するGitHub Actionsを新設する場合は、その実行コードを別途レビューし、本番権限付与は明示的に承認した後に行う。PR上の未承認コードに秘密鍵を渡して実行することは避ける。
+
 ## レポートの読み方
 
 - `excluded_runs_without_verified_prestart_time`: 発走予定時刻が欠ける・形式が不正・予測が発走予定時刻以降など、**発走前だったことを検証できない**予測履歴の除外件数。予測時刻・発走時刻はタイムゾーン付き日時として比較し、同時点内の選択も実際の時系列で行う
