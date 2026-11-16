@@ -195,3 +195,26 @@ def test_authenticated_but_invalid_sqlite_backup_is_rejected_before_scoring(
               "--encrypted-state", str(backup), "--output", str(output)])
     assert not config.DB_PATH.exists()
     assert not output.exists()
+
+
+def test_research_flag_keeps_encrypted_evaluation_readonly(tmp_path, monkeypatch, capsys):
+    """ウォークフォワード検証も平文ログ・本番DBへの書込みを起こさない。"""
+    key = bytes.fromhex("65" * 32)
+    state = _make_encrypted_state(tmp_path, key)
+    monkeypatch.setenv("KEIBA_STATE_KEY", key.hex())
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "untouched-prod.db")
+    path = tmp_path / "research-private.json"
+    assert main(["reconcile", "--read-only", "--org", "NAR", "--research",
+                 "--encrypted-state", str(state), "--output", str(path)]) == 0
+    result = json.loads(path.read_text(encoding="utf-8"))
+    assert result["shadow_research"]["by_time_point"]["t30"]["forward_test_races"] == 0
+    assert capsys.readouterr().out == ""
+    assert not config.DB_PATH.exists()
+
+
+def test_research_flag_without_readonly_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "untouched-prod.db")
+    with pytest.raises(SystemExit) as exc:
+        main(["reconcile", "--research"])
+    assert exc.value.code == 2
+    assert not config.DB_PATH.exists()
