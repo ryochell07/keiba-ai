@@ -359,3 +359,39 @@ def test_latest_odds_compares_actual_utc_instants_not_timestamp_strings():
     assert before[("win", "1")]["odds"] == 4.0
     after = latest_odds(con, "r", "2030-03-02T10:06:00+09:00", include_final=False)
     assert after[("win", "1")]["odds"] == 3.0
+
+
+def test_latest_complete_win_odds_recovers_consistent_snapshot_only():
+    import sqlite3
+    from datetime import datetime
+    from keiba_ai.ev import latest_complete_win_odds
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute("""CREATE TABLE odds_snapshot (
+        race_id TEXT, bet_type TEXT, combo TEXT, captured_at TEXT,
+        odds REAL, odds_max REAL, is_final INTEGER)""")
+    records = [
+        ("r", "win", "1", "2030-03-02T10:00:00+09:00", 3.0, None, 0),
+        ("r", "win", "2", "2030-03-02T10:00:00+09:00", 6.0, None, 0),
+        # 新しい部分取得は同時刻の完全記録より優先しない
+        ("r", "win", "1", "2030-03-02T10:06:00+09:00", 4.0, None, 0),
+        # 確定オッズや未来の値は対象外
+        ("r", "win", "2", "2030-03-02T10:07:00+09:00", 8.0, None, 1),
+        ("r", "win", "1", "2030-03-02T10:15:00+09:00", 5.0, None, 0),
+        ("r", "win", "2", "2030-03-02T10:15:00+09:00", 9.0, None, 0),
+    ]
+    con.executemany("INSERT INTO odds_snapshot VALUES (?,?,?,?,?,?,?)", records)
+    now = datetime.fromisoformat("2030-03-02T10:10:00+09:00")
+    post = datetime.fromisoformat("2030-03-02T10:30:00+09:00")
+    found = latest_complete_win_odds(con, "r", [1, 2], now, post)
+    assert found is not None
+    assert found["1"]["odds"] == 3.0
+    assert found["2"]["odds"] == 6.0
+    assert len({q["captured_at"] for q in found.values()}) == 1
+    assert latest_complete_win_odds(con, "r", [1, 2, 3], now, post) is None
+    assert latest_complete_win_odds(con, "r", [1, 2], now, None) is None
+    assert latest_complete_win_odds(con, "r", [1, 1], now, post) is None
+    stale = datetime.fromisoformat("2030-03-02T11:30:01+09:00")
+    later_post = datetime.fromisoformat("2030-03-02T12:00:00+09:00")
+    assert latest_complete_win_odds(con, "r", [1, 2], stale, later_post) is None
