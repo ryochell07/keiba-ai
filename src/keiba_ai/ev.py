@@ -53,10 +53,12 @@ def latest_complete_win_odds(con: sqlite3.Connection, race_id: str, umaban: list
     for row in rows:
         quote = dict(row)
         combo = str(quote["combo"])
-        if combo in required and quote_is_fresh(quote, at, post):
+        if quote_is_fresh(quote, at, post):
+            # 出走取消などで余分な馬番の正オッズが残る取得時点は採用しない。
+            # 必須馬が揃うだけでは、実際の市場確率の分母が一致しない。
             snapshots.setdefault(quote["captured_at"], {})[combo] = quote
     for stamp in sorted(snapshots, key=datetime.fromisoformat, reverse=True):
-        if required <= snapshots[stamp].keys():
+        if set(snapshots[stamp]) == required:
             return snapshots[stamp]
     return None
 
