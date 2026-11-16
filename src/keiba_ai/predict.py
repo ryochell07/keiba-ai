@@ -61,7 +61,8 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
     frame = serving_frame(load_frame(con, org), today)
     if frame.empty:
         return {"org": org, "races": 0}
-    feats = build_features(add_market(frame, con))
+    # 予測時点より後に保存された市場オッズが特徴量へ混入するのを防ぐ。
+    feats = build_features(add_market(frame, con, as_of=predicted_at))
     target = (frame["race_date"] >= today) & frame["status"].isna()
     stats = {"org": org, "races": 0, "model": mid, "recorded": 0,
              "market_ready_races": 0, "market_recovered_snapshot_races": 0,
