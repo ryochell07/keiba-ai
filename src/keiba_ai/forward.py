@@ -105,9 +105,13 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
     selected = _select(runs)
     tp_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
     final_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
+    # 時点ごとの評価対象数。欠損による見かけの精度向上を検知できるよう母数を保持する。
+    eligibility = {tp: {"selected_runs": 0, "ai_scored": 0, "fresh_complete_odds": 0,
+                        "paired_scored": 0} for tp in TIME_POINTS}
     for (rid, tp), run in selected.items():
         if tp not in tp_rows:
             continue
+        eligibility[tp]["selected_runs"] += 1
         horses = con.execute("SELECT * FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)).fetchall()
         fin = {r[0]: r[1] for r in con.execute("SELECT umaban, finish_pos FROM result WHERE race_id=?", (rid,))}
         pay = payouts.get((rid, "win"), {})
@@ -115,11 +119,14 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         ai_all = _score(horses, "p_win_ai", fin, pay, evaluate_ev=False)
         if ai_all:
             tp_rows[tp]["ai_all_races"].append(ai_all)
+            eligibility[tp]["ai_scored"] += 1
         if _fresh_prestart_odds(run):
+            eligibility[tp]["fresh_complete_odds"] += 1
             scores = {m: _score(horses, c, fin, pay) for m, c in MODELS.items()}
             if all(scores.values()):
-                for m, s in scores.items():
-                    tp_rows[tp][m].append(s)
+                eligibility[tp]["paired_scored"] += 1
+                for m, score in scores.items():
+                    tp_rows[tp][m].append(score)
         # 確定オッズは別枠。全頭の確定オッズがそろうレースだけ
         fo = finals.get(rid, {})
         um = [h["umaban"] for h in horses]
@@ -183,6 +190,8 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
     con.commit()
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
+              "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、オッズは全頭同時刻・予測時点60分以内・発走前のみ",
+                                      "by_time_point": eligibility},
               "final_odds_reference": {"purchasable": False, "note": "確定オッズは発走後に確定する値で、購入時点の比較ではない",
                                        "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in final_rows.items() if d}}}
     config.REPORTS.mkdir(parents=True, exist_ok=True)
