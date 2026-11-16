@@ -72,6 +72,14 @@ def _readonly_reconcile_database(args, path, *, immutable: bool = False) -> int:
     with sqlite3.connect(uri, uri=True, timeout=60) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only = ON")
+        if immutable:
+            # 暗号の認証成功はSQLiteファイルの論理的な整合性の保証ではない。
+            # スナップショットを更新せず、DB破損なら数値評価を拒否する。
+            try:
+                if con.execute("PRAGMA quick_check(1)").fetchone()[0] != "ok":
+                    raise ValueError("評価用データベースの整合性に問題があります")
+            except sqlite3.DatabaseError as exc:
+                raise ValueError("評価用データベースを安全に読み取れません") from exc
         orgs = [args.org] if args.org else [
             r[0] for r in con.execute("SELECT DISTINCT org FROM race ORDER BY org")
         ]
