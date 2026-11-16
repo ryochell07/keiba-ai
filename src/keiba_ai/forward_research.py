@@ -262,6 +262,7 @@ def compare_shadow_summaries(logloss: dict, brier: dict) -> dict:
             result[tp] = {"n_races": 0, "n_days": 0,
                           "log_loss_delta": None, "brier_delta": None,
                           "top1_roi_delta": None,
+                          "candidate_minus_legacy_roi_ci95": None,
                           "candidate_minus_legacy_ci95": None}
             continue
         # 負値ならBrier対応候補が改善。ROIは双方の払戻確認数が一致する場合のみ比較。
@@ -272,15 +273,21 @@ def compare_shadow_summaries(logloss: dict, brier: dict) -> dict:
                    != [(x["race_id"], x["race_date"]) for x in new_rows]):
             raise ValueError("shadow candidates must share the same forward test set")
         ci95 = _date_block_ci95(new_rows, old_rows)
-        roi_ok = (old.get("top1_roi_races") == new.get("top1_roi_races")
+        # 部分払戻集合のROIを比較すると選択バイアスが生じる。
+        # 将来評価の全レースで払戻確認済みの場合だけ差と区間を表示する。
+        roi_ok = (old.get("top1_roi_races") == n
+                  and new.get("top1_roi_races") == n
                   and old.get("top1_roi") is not None
                   and new.get("top1_roi") is not None)
+        roi_ci95 = (_paired_roi_difference_ci95(new_rows, old_rows)
+                    if roi_ok else None)
         result[tp] = {
             "n_races": n,
             "n_days": left["forward_test_days"],
             "log_loss_delta": float(new["log_loss"] - old["log_loss"]),
             "brier_delta": float(new["brier"] - old["brier"]),
             "candidate_minus_legacy_ci95": ci95,
+            "candidate_minus_legacy_roi_ci95": roi_ci95,
             "top1_roi_delta": (
                 float(new["top1_roi"] - old["top1_roi"]) if roi_ok else None
             ),
