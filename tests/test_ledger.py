@@ -439,3 +439,35 @@ def test_market_readiness_transition_is_recorded_even_when_odds_unchanged(world,
         (race.race_id,),
     ).fetchall()
     assert [r["used_model"] for r in history] == ["market", "ai"]
+
+
+def test_partial_new_win_quote_recovers_last_complete_snapshot(world, monkeypatch):
+    """部分更新は取り込みつつ、確率は直近の全頭同時刻スナップショットから作る。"""
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(96), "10", 12)
+    race.race_date, race.post_time = "2030-03-29", "16:00"
+    save_race(con, race, observed_at="2030-03-29T08:00:00+09:00")
+    save_odds(con, race.race_id,
+              [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-29T15:25:00+09:00", False, "t")
+    save_odds(con, race.race_id, [OddsRec("win", "1", 9.5)],
+              "2030-03-29T15:29:00+09:00", False, "t")
+
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-29T15:30:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_ready_races"] == 1
+    assert stats["market_recovered_snapshot_races"] == 1
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert (run["used_model"], run["odds_status"], run["odds_same_time"]) == ("market", "complete", 1)
+    assert run["odds_captured_at"] == "2030-03-29T15:25:00+09:00"
+    hs = con.execute("SELECT umaban,win_odds,odds_captured_at FROM prediction_horse "
+                     "WHERE prediction_id=? ORDER BY umaban", (run["prediction_id"],)).fetchall()
+    assert len(hs) == 8
+    assert [h["win_odds"] for h in hs] == pytest.approx([2.0 + u for u in range(1, 9)])
+    assert all(h["odds_captured_at"] == run["odds_captured_at"] for h in hs)
+    # 表示用の最新個別価格は別に維持し、同時刻の市場確率と混同しない
+    display = con.execute("SELECT odds FROM prediction_display "
+                          "WHERE race_id=? AND bet_type='win' AND combo='1'",
+                          (race.race_id,)).fetchone()
+    assert display["odds"] == pytest.approx(9.5)
