@@ -49,7 +49,10 @@ def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
     n = len(rows_by_model["ai"])
     if any(len(rows_by_model[k]) != n for k in MODELS):
         raise ValueError("paired comparison requires equal race counts")
-    result = {"n_races": n}
+    # 少数レースの偶然の優劣を「改善」と誤認しないため、参考値かどうかを明示する。
+    result = {"n_races": n, "minimum_races_for_screening": 100,
+              "sufficient_sample_for_screening": n >= 100,
+              "note": "100レースは暫定的なスクリーニング目安であり、統計的有意性や採用基準ではない"}
     for left, right in (("ai", "market"), ("blend", "market"), ("blend", "ai")):
         a, b = rows_by_model[left], rows_by_model[right]
         result[f"{left}_minus_{right}"] = {
