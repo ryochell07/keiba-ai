@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from keiba_ai.forward_research import _best_alpha, walk_forward_blend
+from keiba_ai.forward_research import _best_alpha, walk_forward_blend, compare_shadow_summaries
 
 
 def _record(day, race_no, *, ai_winner=0.9, market_winner=0.2):
@@ -114,3 +114,34 @@ def test_brier_aware_shadow_rejects_invalid_objective_weight():
             walk_forward_blend(rows, brier_weight=invalid)
         with pytest.raises(ValueError, match="brier_weight"):
             _best_alpha(rows, brier_weight=invalid)
+
+
+def test_challenger_comparison_reports_same_sample_deltas():
+    rows = [_record(d, r) for d in range(1, 6) for r in range(25)]
+    legacy = walk_forward_blend(rows, min_history=50)
+    challenger = walk_forward_blend(rows, min_history=50, brier_weight=0.25)
+    summary = compare_shadow_summaries(
+        {"t30": legacy, "t10": legacy, "last": legacy},
+        {"t30": challenger, "t10": challenger, "last": challenger},
+    )
+    assert summary["t30"]["n_races"] == 75
+    assert summary["t30"]["n_days"] == 3
+    assert summary["t30"]["log_loss_delta"] == pytest.approx(
+        challenger["scores_on_same_forward_test_races"]["candidate"]["log_loss"]
+        - legacy["scores_on_same_forward_test_races"]["candidate"]["log_loss"]
+    )
+    assert summary["t30"]["brier_delta"] == pytest.approx(
+        challenger["scores_on_same_forward_test_races"]["candidate"]["brier"]
+        - legacy["scores_on_same_forward_test_races"]["candidate"]["brier"]
+    )
+
+
+def test_challenger_comparison_rejects_different_evaluation_sizes():
+    rows = [_record(d, r) for d in range(1, 6) for r in range(25)]
+    legacy = walk_forward_blend(rows, min_history=50)
+    mismatch = walk_forward_blend(rows[:-1], min_history=50, brier_weight=0.25)
+    with pytest.raises(ValueError, match="same forward test set"):
+        compare_shadow_summaries(
+            {"t30": legacy, "t10": legacy, "last": legacy},
+            {"t30": mismatch, "t10": mismatch, "last": mismatch},
+        )
