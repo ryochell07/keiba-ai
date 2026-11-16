@@ -37,9 +37,14 @@ def _stats(rows: list[dict]) -> dict:
     if not rows:
         return {"n_races": 0}
     ll = np.array([x["ll"] for x in rows])
+    # 着順はあっても払戻の未取得レースがある。欠損を0円の不的中と誤認しない。
+    eligible_returns = [x["ret"] for x in rows if x["ret"] is not None]
     n_ev = sum(x["ev_n"] for x in rows)
     return {"n_races": len(rows), "log_loss": float(ll.mean()), "brier": float(np.mean([x["brier"] for x in rows])), "top1_hit": float(np.mean([x["hit"] for x in rows])),
-            "top1_roi": float(sum(x["ret"] for x in rows) / (100 * len(rows))), "ev100_bets": n_ev, "ev100_roi": float(sum(x["ev_ret"] for x in rows) / (100 * n_ev)) if n_ev else None}
+            "top1_roi_races": len(eligible_returns),
+            "payout_coverage_rate": len(eligible_returns) / len(rows),
+            "top1_roi": float(sum(eligible_returns) / (100 * len(eligible_returns))) if eligible_returns else None,
+            "ev100_bets": n_ev, "ev100_roi": float(sum(x["ev_ret"] for x in rows) / (100 * n_ev)) if n_ev else None}
 
 
 def _date_block_ci95(a: list[dict], b: list[dict], draws: int = 2000) -> dict | None:
@@ -108,9 +113,16 @@ def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay:
     if not winners:
         return None
     top = max(ps, key=ps.get)
+    # 勝ち馬の払戻が揃うことを、レース単位の払戻取得済みの根拠とする。
+    # 払戻が未取得でも LogLoss/Brier/的中は計算できるが、ROI の分母に含めない。
+    payout_verified = all(
+        str(u) in pay and pay[str(u)] is not None and np.isfinite(pay[str(u)]) and pay[str(u)] > 0
+        for u in winners
+    )
     get_o = (lambda h: odds.get(h["umaban"])) if odds is not None else (lambda h: h[odds_col])
-    ev = [h["umaban"] for h in horses if get_o(h) and ps[h["umaban"]] * get_o(h) >= 1.0] if evaluate_ev else []
-    return {"ll": -np.log(max(ps[winners[0]], 1e-9)), "brier": sum((p - float(fin.get(u) == 1)) ** 2 for u, p in ps.items()), "hit": int(top in winners), "ret": pay.get(str(top), 0),
+    ev = [h["umaban"] for h in horses if get_o(h) and ps[h["umaban"]] * get_o(h) >= 1.0] if evaluate_ev and payout_verified else []
+    return {"ll": -np.log(max(ps[winners[0]], 1e-9)), "brier": sum((p - float(fin.get(u) == 1)) ** 2 for u, p in ps.items()), "hit": int(top in winners),
+            "ret": pay.get(str(top), 0) if payout_verified else None,
             "ev_n": len(ev), "ev_ret": sum(pay.get(str(u), 0) for u in ev)}
 
 
@@ -269,7 +281,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
             if winners:
                 top = max(mk, key=mk.get)
                 final_rows[tp]["market_final"].append({"ll": -np.log(max(mk[winners[0]], 1e-9)), "brier": sum((p - float(fin.get(u) == 1)) ** 2 for u, p in mk.items()), "hit": int(top in winners),
-                                                       "ret": pay.get(str(top), 0), "ev_n": 0, "ev_ret": 0})
+                                                       "ret": pay.get(str(top), 0) if ai_all["ret"] is not None else None, "ev_n": 0, "ev_ret": 0})
                 final_rows[tp]["ai_same_races"].append(ai_all)
     # 券種別の互換集計: レースごとに発走に最も近い予測
     ledger = Ledger()
