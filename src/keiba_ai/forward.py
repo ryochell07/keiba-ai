@@ -124,6 +124,8 @@ def _win_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sqli
         (race_id, captured_at),
     ).fetchall()
     available = {str(r["combo"]): r["odds"] for r in rows if r["odds"] is not None and np.isfinite(r["odds"]) and r["odds"] > 0}
+    if set(available) != {str(h["umaban"]) for h in horses}:
+        return False
     return all(
         h["odds_captured_at"] == captured_at
         and h["win_odds"] is not None
