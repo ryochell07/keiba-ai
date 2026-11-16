@@ -10,6 +10,7 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write   # スケジュール維持のため、定期実行のワークフローを有効化し直す
 concurrency: {group: keiba-state, cancel-in-progress: false}
 jobs:
   run:
@@ -40,13 +41,13 @@ jobs:
         with: {path: public}
       - uses: actions/deploy-pages@v4
         if: success() || failure()
-      - name: スケジュール維持の記録
-        # 公開リポジトリは無活動が60日続くと定期実行が止まるので、毎月1日に時刻だけコミットする
+      - name: スケジュール維持
+        # 公開リポジトリは無活動が60日続くと定期実行が止まる。main は PR 必須にしたのでコミットはせず、
+        # 毎月1日に定期実行のワークフローを API で有効化し直して、無活動の日数を数え直させる
         if: success()
         run: |
           [ "$(TZ=Asia/Tokyo date +%-d)" = "1" ] || exit 0
-          TZ=Asia/Tokyo date +%F > docs/heartbeat.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/heartbeat.txt
-          git commit -m "chore: monthly heartbeat" && git push || true
+          for wf in daily.yml raceday.yml backfill.yml; do
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable" >/dev/null \
+              || echo "::warning::$wf を有効化し直せませんでした"
+          done
