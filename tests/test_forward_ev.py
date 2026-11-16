@@ -76,6 +76,8 @@ def test_paired_model_comparison_reports_same_race_deltas():
     }
     result = _paired_comparison(rows)
     assert result["n_races"] == 2
+    assert result["sufficient_sample_for_screening"] is False
+    assert result["minimum_races_for_screening"] == 100
     assert result["blend_minus_market"]["log_loss"] == pytest.approx(-0.1)
     assert result["blend_minus_market"]["top1_hit_rate"] == pytest.approx(0.5)
     assert result["ai_minus_market"]["log_loss"] == pytest.approx(0)
