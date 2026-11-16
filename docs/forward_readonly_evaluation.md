@@ -12,7 +12,7 @@
 .venv/bin/keiba reconcile --org JRA --read-only
 ```
 
-`--read-only` は SQLite を `mode=ro` と `PRAGMA query_only=ON` で開き、スキーマ移行・`source_status` 更新・`backtest_result` 更新・JSONファイル生成を行いません。DBがない場合は空のDBを作らず失敗します。結果は標準出力に集計値として表示されます。**その出力にも非公開の性能情報が含まれるため、公開CIではそのまま表示しないでください。**
+`--read-only` は SQLite を `mode=ro` と `PRAGMA query_only=ON` で開き、スキーマ移行・`source_status` 更新・`backtest_result` 更新・JSONファイル生成を行いません。DBがない場合は空のDBを作らず失敗します。予測取得側も `is_final=1` の確定オッズを予測前の市場値として使用しないよう保護しています。結果は標準出力に集計値として表示されます。**その出力にも非公開の性能情報が含まれるため、公開CIではそのまま表示しないでください。**
 
 通常の `keiba reconcile` は従来どおり集計結果とファイルを更新します。既存の毎日の運用を変更することが今回の目的ではありません。
 
@@ -20,8 +20,12 @@
 
 - `evaluation_coverage.by_time_point.*.selected_runs`: 各時点で選択された発走前予測
 - `ai_scored`: AIの確率と着順だけで評価可能なもの
-- `fresh_complete_odds`: 全頭・同時刻の単勝オッズが元の取得履歴と一致し、発走前・予測時点60分以内であるもの
+- `fresh_complete_odds`: 全頭・同時刻の単勝オッズが元の非確定取得履歴と一致し、発走前・予測時点60分以内であるもの
 - `paired_scored`: AI、市場、合成モデルすべての比較スコアが算出できたもの
+- `odds_metadata_invalid`: 単勝オッズの全頭取得・同時刻フラグが不足
+- `odds_timing_invalid`: オッズ取得時刻が不適切（発走後・未来・予測時点60分超など）
+- `odds_snapshot_mismatch`: 元の単勝オッズ取得履歴と保存済み台帳が一致しない
+- `paired_model_probabilities_invalid`: 3モデルのどれかの確率が欠損、非有限、正規化されていないなど
 - `paired_model_comparison.by_time_point`: **同じレースの組**で各モデルの平均LogLoss、Brier、1着的中率の差を比較。LogLoss/Brierは「左 − 右」が負なら左が優位
 - `minimum_races_for_screening: 100`: 暫定的な注意閾値。100件以上であっても有意性・将来収益は保証されません
 
