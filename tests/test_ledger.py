@@ -471,3 +471,43 @@ def test_partial_new_win_quote_recovers_last_complete_snapshot(world, monkeypatc
                           "WHERE race_id=? AND bet_type='win' AND combo='1'",
                           (race.race_id,)).fetchone()
     assert display["odds"] == pytest.approx(9.5)
+
+
+def test_zero_latest_odds_does_not_restore_previous_market_forecast(world, monkeypatch):
+    """0の最新オッズは発売なし/停止の可能性があるため古い正価格に戻さない。"""
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(97), "10", 12)
+    race.race_date, race.post_time = "2030-03-30", "16:00"
+    save_race(con, race, observed_at="2030-03-30T08:00:00+09:00")
+    save_odds(con, race.race_id,
+              [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-30T15:25:00+09:00", False, "t")
+    save_odds(con, race.race_id, [OddsRec("win", "1", 0.0)],
+              "2030-03-30T15:29:00+09:00", False, "t")
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-30T15:30:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_ready_races"] == 0
+    assert stats["market_recovered_snapshot_races"] == 0
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert run["used_model"] == "ai"
+    assert run["odds_status"] == "partial"
+
+
+def test_extra_positive_cancelled_horse_blocks_market_probability(world, monkeypatch):
+    """全出走馬以外の正の単勝オッズがある取得回を市場分母に使わない。"""
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(98), "09", 11)
+    race.race_date, race.post_time = "2030-03-31", "16:00"
+    save_race(con, race, observed_at="2030-03-31T08:00:00+09:00")
+    save_odds(con, race.race_id,
+              [OddsRec("win", str(u), 2.0 + u) for u in range(1, 10)],
+              "2030-03-31T15:25:00+09:00", False, "t")
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-31T15:30:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_ready_races"] == 0
+    assert stats["market_recovered_snapshot_races"] == 0
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert run["used_model"] == "ai"
+    assert run["odds_status"] == "complete"  # 各出走馬の数値があることだけを示す
