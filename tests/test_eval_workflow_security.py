@@ -16,6 +16,7 @@ def test_readonly_evaluation_workflow_requires_main_owner_and_manual_dispatch():
     job = flow["jobs"]["evaluate"]
     condition = job["if"]
     assert "github.ref == 'refs/heads/main'" in condition
+    assert "github.ref_protected == true" in condition
     assert "github.actor == github.repository_owner" in condition
     assert "github.event_name == 'workflow_dispatch'" in condition
     assert "KEIBA_STATE_KEY" not in job.get("env", {})
