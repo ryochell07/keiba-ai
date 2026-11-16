@@ -65,7 +65,9 @@ def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
 
 def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay: dict[str, int], odds_col: str = "win_odds", odds: dict[int, float] | None = None, *, evaluate_ev: bool = True) -> dict | None:
     ps = {h["umaban"]: h[col] for h in horses}
-    if any(v is None for v in ps.values()):
+    # 不正な確率を集計するとNaNや見かけ上の高精度が発生する。確率の和も検証する。
+    if (not ps or any(v is None or not np.isfinite(v) or v < 0 or v > 1 for v in ps.values())
+            or abs(sum(ps.values()) - 1.0) > 1e-4):
         return None
     winners = [u for u in ps if fin.get(u) == 1]
     if not winners:
@@ -149,7 +151,9 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
     final_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
     # 時点ごとの評価対象数。欠損による見かけの精度向上を検知できるよう母数を保持する。
     eligibility = {tp: {"selected_runs": 0, "ai_scored": 0, "fresh_complete_odds": 0,
-                        "paired_scored": 0} for tp in TIME_POINTS}
+                        "paired_scored": 0, "odds_metadata_invalid": 0,
+                        "odds_timing_invalid": 0, "odds_snapshot_mismatch": 0,
+                        "paired_model_probabilities_invalid": 0} for tp in TIME_POINTS}
     for (rid, tp), run in selected.items():
         if tp not in tp_rows:
             continue
@@ -162,13 +166,21 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         if ai_all:
             tp_rows[tp]["ai_all_races"].append(ai_all)
             eligibility[tp]["ai_scored"] += 1
-        if _fresh_prestart_odds(run) and _win_odds_same_time(con, rid, horses, run["odds_captured_at"]):
+        if run["odds_status"] != "complete" or not run["odds_same_time"]:
+            eligibility[tp]["odds_metadata_invalid"] += 1
+        elif not _fresh_prestart_odds(run):
+            eligibility[tp]["odds_timing_invalid"] += 1
+        elif not _win_odds_same_time(con, rid, horses, run["odds_captured_at"]):
+            eligibility[tp]["odds_snapshot_mismatch"] += 1
+        else:
             eligibility[tp]["fresh_complete_odds"] += 1
             scores = {m: _score(horses, c, fin, pay) for m, c in MODELS.items()}
             if all(scores.values()):
                 eligibility[tp]["paired_scored"] += 1
                 for m, score in scores.items():
                     tp_rows[tp][m].append(score)
+            else:
+                eligibility[tp]["paired_model_probabilities_invalid"] += 1
         # 確定オッズは別枠。全頭の確定オッズがそろうレースだけ
         fo = finals.get(rid, {})
         um = [h["umaban"] for h in horses]
