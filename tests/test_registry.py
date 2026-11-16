@@ -127,14 +127,94 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
                        VALUES (?,?,'JRA',?,'2024-01-01T15:00:00+09:00',?,'M','B','i','f','2024-01-01T13:50:00+09:00','complete',1,'blend','[1,1,1]','[1,1,1]')""", (pid, r.race_id, at, tp))
         for u in range(1, 9):
             p = .5 if u == winner else (.2 if u == other else .3 / 6)
-            con.execute("""INSERT INTO prediction_horse(prediction_id,umaban,horse_id,waku,p_win_ai,p_win_market,p_win_blend,p_win_used,strength_ai,strength_used,win_odds)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (pid, u, f"T{u:04d}", (u + 1) // 2, p, 1 / 8, p, p, float(np.log(p)), float(np.log(p)), 2.4 if u == winner else 1.0))
+            win_odds = 2.4 if u == winner else 1.0
+            stamp = "2024-01-01T13:50:00+09:00"
+            # 新しい評価ガードに合わせ、台帳と同時刻の元オッズ取得履歴も用意する。
+            con.execute("""INSERT OR REPLACE INTO odds_snapshot(race_id,bet_type,combo,captured_at,odds,is_final,source)
+                           VALUES (?,'win',?,?,?,0,'test')""", (r.race_id, str(u), stamp, win_odds))
+            con.execute("""INSERT INTO prediction_horse(prediction_id,umaban,horse_id,waku,p_win_ai,p_win_market,p_win_blend,p_win_used,strength_ai,strength_used,win_odds,odds_captured_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (pid, u, f"T{u:04d}", (u + 1) // 2, p, 1 / 8, p, p, float(np.log(p)), float(np.log(p)), win_odds, stamp))
     run("P1", "2024-01-01T14:00:00+09:00")
     out = reconcile(con, "JRA")
     by = {(x["strategy"], x["bet_type"]): x for x in out["rows"]}
     assert by[("top1", "win")]["roi"] == 5.0
     assert by[("ev_1.0", "win")]["n_bets"] == 1  # 確率×オッズが1以上の馬だけ
     assert out["by_time_point"]["morning"]["ai"]["n_races"] == 1
+    assert out["by_time_point"]["morning"]["used_all_races"]["n_races"] == 1
+    assert out["by_time_point"]["morning"]["used_all_races"]["log_loss"] == pytest.approx(
+        out["by_time_point"]["morning"]["ai"]["log_loss"]
+    )
+    counts = out["evaluation_coverage"]["by_time_point"]["morning"]
+    assert counts["deployed_scored"] == 1
+    assert counts["used_model_counts"] == {"ai": 0, "market": 0, "blend": 1, "other": 0}
+    assert counts["paired_scored"] == 1
+    assert counts["outcome_valid"] == 1
+    assert counts["outcome_coverage_rate"] == 1.0
+    assert counts["paired_rate_after_outcome_validation"] == 1.0
+    assert counts["odds_snapshot_mismatch"] == 0
+    assert counts["n_model_versions"] == 1
+    assert counts["mixed_model_versions"] is False
+    assert out["n_races_with_selected_prestart_run"] == 1
+    # 結果の一部欠損、後から分かった出走取消、同着1着は単一正解として採点しない
+    original = con.execute(
+        "SELECT finish_pos, status FROM result WHERE race_id=? AND umaban=?",
+        (r.race_id, other),
+    ).fetchone()
+    assert original is not None
+    con.execute("DELETE FROM result WHERE race_id=? AND umaban=?", (r.race_id, other))
+    missing_result = reconcile(con, "JRA")
+    mc = missing_result["evaluation_coverage"]["by_time_point"]["morning"]
+    assert mc["incomplete_results"] == 1
+    assert mc["ai_scored"] == 0 and mc["deployed_scored"] == 0
+    assert missing_result["n_races"] == 0
+    con.execute(
+        "INSERT INTO result(race_id, umaban, finish_pos, status) VALUES (?,?,?,?)",
+        (r.race_id, other, original["finish_pos"], original["status"]),
+    )
+    con.execute("UPDATE result SET status='scratched', finish_pos=NULL WHERE race_id=? AND umaban=?",
+                (r.race_id, other))
+    withdrawn = reconcile(con, "JRA")
+    assert withdrawn["evaluation_coverage"]["by_time_point"]["morning"]["runner_set_mismatch"] == 1
+    assert withdrawn["evaluation_coverage"]["by_time_point"]["morning"]["paired_scored"] == 0
+    con.execute("UPDATE result SET status=?, finish_pos=1 WHERE race_id=? AND umaban=?",
+                (original["status"], r.race_id, other))
+    dead_heat = reconcile(con, "JRA")
+    assert dead_heat["evaluation_coverage"]["by_time_point"]["morning"]["multiple_or_missing_winners"] == 1
+    assert dead_heat["by_time_point"] == {}
+    con.execute("UPDATE result SET status=?, finish_pos=? WHERE race_id=? AND umaban=?",
+                (original["status"], original["finish_pos"], r.race_id, other))
+    # 1着の着順だけ欠損したレースを母数から「なかったこと」にしない。
+    con.execute("UPDATE result SET finish_pos=NULL WHERE race_id=? AND umaban=?", (r.race_id, winner))
+    no_winner = reconcile(con, "JRA")
+    nc = no_winner["evaluation_coverage"]["by_time_point"]["morning"]
+    assert nc["selected_runs"] == 1
+    assert nc["outcome_valid"] == 0
+    assert nc["outcome_coverage_rate"] == 0.0
+    assert nc["paired_rate_after_outcome_validation"] is None
+    assert nc["multiple_or_missing_winners"] == 1
+    assert no_winner["n_races_with_selected_prestart_run"] == 1
+    assert no_winner["n_races"] == 0
+    con.execute("UPDATE result SET finish_pos=1 WHERE race_id=? AND umaban=?", (r.race_id, winner))
+    assert reconcile(con, "JRA")["n_races"] == 1
+    # 元オッズ履歴と台帳が食い違えば、市場比較・購入可能EVから除外する
+    con.execute("""UPDATE odds_snapshot SET odds=odds+0.5
+                   WHERE race_id=? AND bet_type='win' AND is_final=0
+                   AND captured_at=? AND combo=?""",
+                (r.race_id, "2024-01-01T13:50:00+09:00", str(winner)))
+    bad = reconcile(con, "JRA")
+    bad_counts = bad["evaluation_coverage"]["by_time_point"]["morning"]
+    assert bad_counts["paired_scored"] == 0
+    assert bad_counts["odds_snapshot_mismatch"] == 1
+    assert not any(row["strategy"] == "ev_1.0" for row in bad["rows"])
+    # 着順が存在しても、単勝払戻が未取得なら0円としてROIを計算しない。
+    con.execute("DELETE FROM payout WHERE race_id=? AND bet_type='win'", (r.race_id,))
+    missing_payout = reconcile(con, "JRA")
+    actual = missing_payout["by_time_point"]["morning"]["used_all_races"]
+    assert actual["n_races"] == 1
+    assert actual["top1_hit"] == 1
+    assert actual["top1_roi_races"] == 0
+    assert actual["top1_roi"] is None
+    assert actual["payout_coverage_rate"] == 0
     # 発走後に作られた予測は集計しない
     run("P2", "2024-01-01T16:00:00+09:00")
     assert reconcile(con, "JRA")["n_races"] == 1
