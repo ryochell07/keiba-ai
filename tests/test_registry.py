@@ -140,7 +140,13 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     assert by[("top1", "win")]["roi"] == 5.0
     assert by[("ev_1.0", "win")]["n_bets"] == 1  # 確率×オッズが1以上の馬だけ
     assert out["by_time_point"]["morning"]["ai"]["n_races"] == 1
+    assert out["by_time_point"]["morning"]["used_all_races"]["n_races"] == 1
+    assert out["by_time_point"]["morning"]["used_all_races"]["log_loss"] == pytest.approx(
+        out["by_time_point"]["morning"]["ai"]["log_loss"]
+    )
     counts = out["evaluation_coverage"]["by_time_point"]["morning"]
+    assert counts["deployed_scored"] == 1
+    assert counts["used_model_counts"] == {"ai": 0, "market": 0, "blend": 1, "other": 0}
     assert counts["paired_scored"] == 1
     assert counts["odds_snapshot_mismatch"] == 0
     assert counts["n_model_versions"] == 1
