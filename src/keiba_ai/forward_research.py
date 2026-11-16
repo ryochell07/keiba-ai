@@ -123,7 +123,8 @@ def _paired_roi_difference_ci95(candidate: list[dict], deployed: list[dict],
 
 
 def walk_forward_blend(records: list[dict], *, min_history: int = 50,
-                       min_history_dates: int = 2, brier_weight: float = 0.0) -> dict:
+                       min_history_dates: int = 2, brier_weight: float = 0.0,
+                       include_private: bool = False) -> dict:
     """同一開催日の結果を見て同日レースを調整しない、逐次外部検証。"""
     if not np.isfinite(brier_weight) or brier_weight < 0:
         raise ValueError("brier_weight must be a finite nonnegative number")
@@ -207,15 +208,12 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         # 0以上の下限が必要（差は候補ROI−現行ROI）。
         "roi_cluster_ci_not_worse": bool(roi_ci and roi_ci[0] >= 0),
     }
-    return {
+    summary = {
         "promotion_gate": {
             "eligible_for_review": all(checks.values()),
             "applied_to_production": False,
             "checks": checks,
         },
-        # 内部専用: evaluate_shadow が公開レポートへ出す前に除去する。
-        "_comparison_token": _evaluation_token(selected["candidate"]),
-        "_candidate_scored_rows": selected["candidate"],
         "optimization_brier_weight": brier_weight,
         "valid_races": len(records), "valid_days": len(days),
         "minimum_training_races": min_history, "minimum_training_days": min_history_dates,
@@ -233,6 +231,12 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         "candidate_minus_deployed_roi_ci95": roi_ci,
         "note": "学習データは必ず以前の開催日のみ。調整を行う研究候補で、本番採用や収益改善を意味しない",
     }
+    # デフォルト返却値は集計値のみ。個別レースの結果は明示的な
+    # 同一プロセス内研究比較に限り内部フィールドとして提供する。
+    if include_private:
+        summary["_comparison_token"] = _evaluation_token(selected["candidate"])
+        summary["_candidate_scored_rows"] = selected["candidate"]
+    return summary
 
 
 
@@ -328,10 +332,11 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
             "blend": {h["umaban"]: h["p_win_blend"] for h in rows},
             "used": {h["umaban"]: h["p_win_used"] for h in rows},
         })
-    legacy = {tp: walk_forward_blend(items[tp], min_history=min_history)
+    legacy = {tp: walk_forward_blend(items[tp], min_history=min_history,
+                                     include_private=True)
               for tp in POINTS}
     challenger = {tp: walk_forward_blend(items[tp], min_history=min_history,
-                                       brier_weight=0.25)
+                                       brier_weight=0.25, include_private=True)
                   for tp in POINTS}
     comparison = compare_shadow_summaries(legacy, challenger)
     # ID照合トークンは内部のみ。暗号化レポートにも書き出さない。
