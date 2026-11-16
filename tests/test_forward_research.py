@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from keiba_ai.forward_research import _best_alpha, walk_forward_blend, compare_shadow_summaries
+from keiba_ai.forward_research import _best_alpha, walk_forward_blend, compare_shadow_summaries, _paired_roi_difference_ci95
 
 
 def _record(day, race_no, *, ai_winner=0.9, market_winner=0.2):
@@ -251,3 +251,33 @@ def test_promotion_full_payout_coverage_on_consistent_reference():
     rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
     out = walk_forward_blend(rows, min_history=50, min_history_dates=2)
     assert out["promotion_gate"]["checks"]["complete_forward_payout_coverage"] is True
+
+
+def test_paired_roi_ci_requires_complete_identical_race_sets():
+    a = [{"race_id": f"race-{d}", "race_date": f"2030-04-{d:02d}",
+          "ret": 200.0} for d in range(1, 17)]
+    b = [dict(row, ret=100.0) for row in a]
+    interval = _paired_roi_difference_ci95(a, b)
+    assert interval == pytest.approx([1.0, 1.0])
+    assert _paired_roi_difference_ci95(a, b[:-1]) is None
+    invalid = [dict(row) for row in b]
+    invalid[-1]["race_id"] = "wrong-race"
+    assert _paired_roi_difference_ci95(a, invalid) is None
+    invalid = [dict(row) for row in b]
+    invalid[-1]["ret"] = None
+    assert _paired_roi_difference_ci95(a, invalid) is None
+
+
+def test_paired_roi_ci_requires_ten_independent_days():
+    a = [{"race_id": f"race-{d}", "race_date": f"2030-04-{d:02d}",
+          "ret": 200.0} for d in range(1, 10)]
+    b = [dict(row, ret=100.0) for row in a]
+    assert _paired_roi_difference_ci95(a, b) is None
+
+
+def test_roi_cluster_gate_passes_only_with_nonnegative_lower_bound():
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    out = walk_forward_blend(rows, min_history=50, min_history_dates=2)
+    assert out["candidate_minus_deployed_roi_ci95"] == pytest.approx([0.0, 0.0])
+    assert out["promotion_gate"]["checks"]["roi_cluster_ci_not_worse"] is True
+    assert out["promotion_gate"]["applied_to_production"] is False
