@@ -404,3 +404,54 @@ def test_latest_complete_win_odds_recovers_consistent_snapshot_only():
         "INSERT INTO odds_snapshot VALUES ('r','win','3','2030-03-02T10:00:00+09:00',12.0,NULL,0)"
     )
     assert latest_complete_win_odds(con, "r", [1, 2], now, post) is None
+
+
+def test_forward_roi_excludes_missing_payouts_without_losing_probability_scores():
+    from keiba_ai.forward import _stats
+
+    horses = [
+        {"umaban": 1, "p_win_ai": 0.7, "win_odds": 2.5},
+        {"umaban": 2, "p_win_ai": 0.3, "win_odds": 5.0},
+    ]
+    fin = {1: 1, 2: 2}
+    # 着順だけ判明、払戻が未取得。的中率・LogLossは有効でもROIは不明。
+    missing = _score(horses, "p_win_ai", fin, {}, evaluate_ev=True)
+    assert missing is not None and missing["hit"] == 1
+    assert missing["ret"] is None
+    assert missing["ev_n"] == 0
+    no_payout_stats = _stats([missing])
+    assert no_payout_stats["n_races"] == 1
+    assert no_payout_stats["top1_hit"] == 1
+    assert no_payout_stats["top1_roi"] is None
+    assert no_payout_stats["top1_roi_races"] == 0
+    assert no_payout_stats["payout_coverage_rate"] == 0
+    assert no_payout_stats["ev100_roi"] is None
+
+    # 勝ち馬の払戻があるなら、外れた馬の払戻0円は真正な不的中。
+    verified = _score(horses, "p_win_ai", fin, {"1": 400}, evaluate_ev=True)
+    assert verified["ret"] == 400
+    assert verified["ev_n"] == 2
+    mixed = _stats([missing, verified])
+    assert mixed["n_races"] == 2  # スコアは両レースを評価
+    assert mixed["top1_roi_races"] == 1
+    assert mixed["payout_coverage_rate"] == 0.5
+    assert mixed["top1_roi"] == 4.0
+    assert mixed["ev100_roi"] == 2.0
+
+
+def test_forward_payout_verification_handles_losing_top_and_multiple_winners():
+    from keiba_ai.forward import _stats
+
+    horses = [
+        {"umaban": 1, "p_win_ai": 0.6, "win_odds": 2.0},
+        {"umaban": 2, "p_win_ai": 0.3, "win_odds": 4.0},
+        {"umaban": 3, "p_win_ai": 0.1, "win_odds": 10.0},
+    ]
+    loser_top = _score(horses, "p_win_ai", {1: 2, 2: 1, 3: 3}, {"2": 350})
+    assert loser_top["ret"] == 0
+    assert _stats([loser_top])["top1_roi"] == 0
+    # 同着1着の片方の払戻が欠ける場合、回収額は不明。
+    partial_dead_heat = _score(horses, "p_win_ai", {1: 1, 2: 1, 3: 3}, {"1": 220})
+    assert partial_dead_heat["ret"] is None
+    complete_dead_heat = _score(horses, "p_win_ai", {1: 1, 2: 1, 3: 3}, {"1": 220, "2": 430})
+    assert complete_dead_heat["ret"] == 220
