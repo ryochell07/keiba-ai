@@ -63,3 +63,22 @@ def test_fresh_odds_rejects_stale_future_and_poststart_quotes():
     assert not _fresh_prestart_odds({**base, "odds_same_time": 0})
     assert not _fresh_prestart_odds({**base, "odds_captured_at": None})
     assert not _fresh_prestart_odds({**base, "predicted_at": "2030-03-02T10:30:00+09:00"})
+
+
+def test_paired_model_comparison_reports_same_race_deltas():
+    import pytest
+    from keiba_ai.forward import _paired_comparison
+
+    rows = {
+        "ai": [{"ll": 0.6, "brier": 0.3, "hit": 1}, {"ll": 1.4, "brier": 0.8, "hit": 0}],
+        "market": [{"ll": 0.8, "brier": 0.4, "hit": 0}, {"ll": 1.2, "brier": 0.6, "hit": 1}],
+        "blend": [{"ll": 0.7, "brier": 0.3, "hit": 1}, {"ll": 1.1, "brier": 0.5, "hit": 1}],
+    }
+    result = _paired_comparison(rows)
+    assert result["n_races"] == 2
+    assert result["blend_minus_market"]["log_loss"] == pytest.approx(-0.1)
+    assert result["blend_minus_market"]["top1_hit_rate"] == pytest.approx(0.5)
+    assert result["ai_minus_market"]["log_loss"] == pytest.approx(0)
+    assert _paired_comparison({}) == {"n_races": 0}
+    with pytest.raises(ValueError):
+        _paired_comparison({**rows, "blend": rows["blend"][:1]})
