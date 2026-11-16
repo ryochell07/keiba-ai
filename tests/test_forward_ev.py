@@ -161,3 +161,30 @@ def test_readonly_cli_opens_db_without_schema_migration(tmp_path, monkeypatch, c
     assert not (tmp_path / "uncreated").exists()
     with sqlite3.connect(db) as con:
         assert con.execute("SELECT name FROM sqlite_master WHERE name='backtest_result'").fetchone() is None
+
+
+def test_latest_odds_excludes_final_flagged_timestamp_from_prestart_quotes():
+    """'final' 文字列でなく実時刻を持つ確定オッズも予測に混ぜない。"""
+    import sqlite3
+    from keiba_ai.ev import latest_odds
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute("""CREATE TABLE odds_snapshot(
+        race_id TEXT, bet_type TEXT, combo TEXT, odds REAL, odds_max REAL,
+        captured_at TEXT, is_final INTEGER)""")
+    rows = [
+        ("r", "win", "1", 3.0, None, "2030-03-02T10:00:00+09:00", 0),
+        ("r", "win", "1", 2.0, None, "2030-03-02T10:05:00+09:00", 1),
+        ("r", "win", "2", 5.0, None, "final", 1),
+        ("r", "win", "3", 7.0, None, "2030-03-02T10:03:00+09:00", 0),
+    ]
+    con.executemany("INSERT INTO odds_snapshot VALUES (?,?,?,?,?,?,?)", rows)
+    at = "2030-03-02T10:10:00+09:00"
+    prestart = latest_odds(con, "r", at, include_final=False)
+    assert prestart[("win", "1")]["odds"] == 3.0
+    assert ("win", "2") not in prestart
+    assert prestart[("win", "3")]["odds"] == 7.0
+    with_final = latest_odds(con, "r", at, include_final=True)
+    assert with_final[("win", "1")]["odds"] == 2.0
+    assert with_final[("win", "2")]["odds"] == 5.0
