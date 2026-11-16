@@ -36,12 +36,12 @@ def test_readonly_evaluation_workflow_requires_main_owner_and_manual_dispatch():
     assert "--encrypted-state" in joined
     assert "--output" in joined
     assert "keiba_ai.eval_artifact encrypt" in joined
-    assert "upload-artifact@v4" in joined
+    assert "actions/upload-artifact@" in joined
 
     secret_steps = [step for step in steps if "KEIBA_STATE_KEY" in step.get("env", {})]
     assert len(secret_steps) == 1
     assert secret_steps[0]["name"] == "Evaluate read-only and encrypt confidential results"
-    upload = next(step for step in steps if "upload-artifact@v4" in step.get("uses", ""))
+    upload = next(step for step in steps if "actions/upload-artifact@" in step.get("uses", ""))
     assert upload["with"]["path"] == "${{ runner.temp }}/forward-evaluation.enc"
     assert upload["with"]["retention-days"] == "3"
     secret_script = secret_steps[0]["run"]
