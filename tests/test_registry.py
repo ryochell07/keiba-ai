@@ -161,6 +161,15 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     assert bad_counts["paired_scored"] == 0
     assert bad_counts["odds_snapshot_mismatch"] == 1
     assert not any(row["strategy"] == "ev_1.0" for row in bad["rows"])
+    # 着順が存在しても、単勝払戻が未取得なら0円としてROIを計算しない。
+    con.execute("DELETE FROM payout WHERE race_id=? AND bet_type='win'", (r.race_id,))
+    missing_payout = reconcile(con, "JRA")
+    actual = missing_payout["by_time_point"]["morning"]["used_all_races"]
+    assert actual["n_races"] == 1
+    assert actual["top1_hit"] == 1
+    assert actual["top1_roi_races"] == 0
+    assert actual["top1_roi"] is None
+    assert actual["payout_coverage_rate"] == 0
     # 発走後に作られた予測は集計しない
     run("P2", "2024-01-01T16:00:00+09:00")
     assert reconcile(con, "JRA")["n_races"] == 1
