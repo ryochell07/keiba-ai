@@ -190,10 +190,12 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
                         "paired_scored": 0, "odds_metadata_invalid": 0,
                         "odds_timing_invalid": 0, "odds_snapshot_mismatch": 0,
                         "paired_model_probabilities_invalid": 0} for tp in TIME_POINTS}
+    model_versions = {tp: set() for tp in TIME_POINTS}
     for (rid, tp), run in selected.items():
         if tp not in tp_rows:
             continue
         eligibility[tp]["selected_runs"] += 1
+        model_versions[tp].add(run["model_version_id"])
         horses = con.execute("SELECT * FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)).fetchall()
         fin = {r[0]: r[1] for r in con.execute("SELECT umaban, finish_pos FROM result WHERE race_id=?", (rid,))}
         pay = payouts.get((rid, "win"), {})
@@ -288,6 +290,8 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         n = counts["selected_runs"]
         counts["paired_coverage_rate"] = counts["paired_scored"] / n if n else None
         counts["odds_eligible_rate"] = counts["fresh_complete_odds"] / n if n else None
+        counts["n_model_versions"] = len(model_versions[tp])
+        counts["mixed_model_versions"] = len(model_versions[tp]) > 1
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
               "legacy_ev_basis_note": "rows の odds_basis=cutoff は既存互換ラベル。実際はレースごとの発走前最終予測であり、必ずしも発走10分前のオッズではない。発走前・同時刻・60分以内の条件を満たす場合のみEVを集計する。",
               "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。区間は開催日単位の探索的ブートストラップで、統計的有意性・将来回収率を保証しない",
