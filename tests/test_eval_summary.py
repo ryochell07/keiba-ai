@@ -17,6 +17,7 @@ def _report(org="NAR"):
     rows = [_record(d, r) for d in range(1, 6) for r in range(25)]
     block = {tp: walk_forward_blend(rows, min_history=40) for tp in ("t30", "t10", "last")}
     brier = {tp: walk_forward_blend(rows, min_history=40, brier_weight=.25) for tp in ("t30", "t10", "last")}
+    loglinear = {tp: walk_forward_blend(rows, min_history=40, method="loglinear") for tp in ("t30", "t10", "last")}
     stats = {"n_races": 75, "log_loss": 1.5, "brier": .7, "top1_hit": .3}
     return {
         "org": org,
@@ -28,8 +29,10 @@ def _report(org="NAR"):
             "method": SECRET,
             "by_time_point": block,
             "brier_regularized_challenger": {"brier_weight": .25, "by_time_point": brier},
+            "loglinear_challenger": {"by_time_point": loglinear},
             "current_model_only": {"by_time_point": block,
-                                   "brier_regularized_challenger": {"by_time_point": brier}},
+                                   "brier_regularized_challenger": {"by_time_point": brier},
+                                   "loglinear_challenger": {"by_time_point": loglinear}},
             "model_versions_in_valid_races": {"t30": 1, "t10": 1, "last": 1},
         },
     }
@@ -42,6 +45,9 @@ def test_summary_shows_numbers_but_no_strings_from_the_report():
     assert "| 30分前 | 75 | 3 |" in out           # 検証レース・検証日
     assert "1.5000" in out                       # 保存済み予測の LL
     assert "ECE" in out and "審査資格" in out
+    assert "対数線形の指数(AI/市場)" in out
+    # 対数線形の指数は AI^2.5 (このデータでは AI が常に正しい)、審査資格は3候補とも ×
+    assert "| 2.5000 / 0.0000 | × / × / × |" in out
 
 
 def test_summary_hides_non_numeric_values():

@@ -403,6 +403,11 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
         # 版が1つなら、採用中の版だけの評価も同じ集合になる
         assert report["model_versions_in_valid_races"][point] == 1
         assert report["current_model_only"]["by_time_point"][point]["forward_test_races"] == 75
+        # 対数線形の候補も同じ将来評価集合で比べる (全期間・採用中の版だけの両方)
+        for scope in (report, report["current_model_only"]):
+            assert scope["loglinear_challenger"]["by_time_point"][point]["forward_test_races"] == 75
+            assert scope["loglinear_challenger"]["by_time_point"][point]["method"] == "loglinear"
+            assert scope["loglinear_minus_legacy"][point]["n_races"] == 75
 
     encoded = json.dumps(report, ensure_ascii=False)
     assert "_candidate_scored_rows" not in encoded
@@ -444,3 +449,54 @@ def test_evaluate_shadow_separates_current_model_from_mixed_versions(monkeypatch
     encoded = json.dumps(report, ensure_ascii=False)
     assert "m-old" not in encoded and "m-new" not in encoded
     assert "_candidate_scored_rows" not in encoded
+
+
+def test_loglinear_nests_ai_and_market_and_normalizes():
+    from keiba_ai.forward_research import _loglinear
+    rec = {"ai": {1: .6, 2: .3, 3: .1}, "market": {1: .2, 2: .5, 3: .3}}
+    assert _loglinear(rec, 1, 0) == pytest.approx(rec["ai"])
+    assert _loglinear(rec, 0, 1) == pytest.approx(rec["market"])
+    p = _loglinear(rec, 1.5, 0.7)
+    assert sum(p.values()) == pytest.approx(1.0)
+    # 0.5ずつは幾何平均を正規化したもの
+    geo = {u: math.sqrt(rec["ai"][u] * rec["market"][u]) for u in rec["ai"]}
+    assert _loglinear(rec, .5, .5) == pytest.approx({u: v / sum(geo.values()) for u, v in geo.items()})
+
+
+def test_loglinear_exponents_follow_past_results():
+    from keiba_ai.forward_research import EXPONENTS, _best_exponents
+    # AIは常に負け馬を推し、市場は常に勝ち馬を推す過去 → AIは使わず、市場を最大まで鋭くする
+    history = [_record(d, r, ai_winner=.3, market_winner=.7) for d in (1, 2) for r in range(25)]
+    assert _best_exponents(history) == (0.0, EXPONENTS[-1])
+    # 逆なら市場を使わず AI を鋭くする
+    history = [_record(d, r, ai_winner=.7, market_winner=.3) for d in (1, 2) for r in range(25)]
+    assert _best_exponents(history) == (EXPONENTS[-1], 0.0)
+
+
+def test_loglinear_exponents_never_see_the_test_day(monkeypatch):
+    from keiba_ai import forward_research as research
+    seen = []
+    original = research._best_exponents
+
+    def spy(history, *args, **kwargs):
+        seen.append(max(r["race_date"] for r in history))
+        return original(history, *args, **kwargs)
+
+    monkeypatch.setattr(research, "_best_exponents", spy)
+    training = [_record(d, r) for d in (1, 2) for r in range(25)]
+    # 3日目は AI と市場の当たり外れが逆。当日の答えで指数を選べば候補の LogLoss は小さくなるはず
+    opposite = [_record(3, r, ai_winner=0.1, market_winner=0.9) for r in range(25)]
+    out = research.walk_forward_blend(training + opposite, min_history=50, method="loglinear")
+    assert seen == ["2030-04-02"]
+    assert out["forward_test_races"] == 25
+    assert out["mean_ai_exponent"] > out["mean_market_exponent"]
+    assert out["scores_on_same_forward_test_races"]["candidate"]["log_loss"] > 2
+    assert out["mean_ai_weight"] is None
+
+
+def test_loglinear_rejects_brier_weight_and_unknown_method():
+    rows = [_record(d, r) for d in (1, 2, 3) for r in range(25)]
+    with pytest.raises(ValueError):
+        walk_forward_blend(rows, method="loglinear", brier_weight=.25)
+    with pytest.raises(ValueError):
+        walk_forward_blend(rows, method="cubic")
