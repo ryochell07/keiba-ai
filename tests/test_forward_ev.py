@@ -79,9 +79,12 @@ def test_paired_model_comparison_reports_same_race_deltas():
     from keiba_ai.forward import _paired_comparison
 
     rows = {
-        "ai": [{"ll": 0.6, "brier": 0.3, "hit": 1}, {"ll": 1.4, "brier": 0.8, "hit": 0}],
-        "market": [{"ll": 0.8, "brier": 0.4, "hit": 0}, {"ll": 1.2, "brier": 0.6, "hit": 1}],
-        "blend": [{"ll": 0.7, "brier": 0.3, "hit": 1}, {"ll": 1.1, "brier": 0.5, "hit": 1}],
+        "ai": [{"race_id": "r1", "ll": 0.6, "brier": 0.3, "hit": 1},
+               {"race_id": "r2", "ll": 1.4, "brier": 0.8, "hit": 0}],
+        "market": [{"race_id": "r1", "ll": 0.8, "brier": 0.4, "hit": 0},
+                   {"race_id": "r2", "ll": 1.2, "brier": 0.6, "hit": 1}],
+        "blend": [{"race_id": "r1", "ll": 0.7, "brier": 0.3, "hit": 1},
+                  {"race_id": "r2", "ll": 1.1, "brier": 0.5, "hit": 1}],
     }
     result = _paired_comparison(rows)
     assert result["n_races"] == 2
@@ -91,8 +94,18 @@ def test_paired_model_comparison_reports_same_race_deltas():
     assert result["blend_minus_market"]["top1_hit_rate"] == pytest.approx(0.5)
     assert result["ai_minus_market"]["log_loss"] == pytest.approx(0)
     assert _paired_comparison({}) == {"n_races": 0}
-    with pytest.raises(ValueError):
+    # 市場だけ逆順になっても、race_idをキーに比較して精度は同一。
+    reversed_market = {**rows, "market": list(reversed(rows["market"]))}
+    assert _paired_comparison(reversed_market) == result
+    with pytest.raises(ValueError, match="matching race IDs"):
         _paired_comparison({**rows, "blend": rows["blend"][:1]})
+    # 件数が同じでも対象レースが異なれば評価を拒否。
+    with pytest.raises(ValueError, match="matching race IDs"):
+        _paired_comparison({**rows, "market": [{**rows["market"][0], "race_id": "other"}, rows["market"][1]]})
+    with pytest.raises(ValueError, match="unique non-empty race IDs"):
+        _paired_comparison({**rows, "blend": [rows["blend"][0], rows["blend"][0]]})
+    with pytest.raises(ValueError, match="all model predictions"):
+        _paired_comparison({**rows, "market": []})
 
 
 def test_win_ev_requires_nonfinal_snapshot_matching_all_horses():
