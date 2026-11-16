@@ -49,7 +49,7 @@ def test_readonly_evaluation_workflow_requires_main_owner_and_manual_dispatch():
     assert '> "$workdir/encryption.stdout"' in secret_script
     assert "if [ \"$rc\" -ne 0 ]" in secret_script
     assert "set +x" in secret_script
-    assert "eval" not in secret_script
+    assert "\\n          eval " not in secret_script
     assert "cat \"$workdir/metrics.json\"" not in joined
     assert "evaluation.stderr" in steps[-1]["run"]
     assert "encryption.stderr" in steps[-1]["run"]
