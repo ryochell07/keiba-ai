@@ -162,6 +162,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         },
         # 内部専用: evaluate_shadow が公開レポートへ出す前に除去する。
         "_comparison_token": _evaluation_token(selected["candidate"]),
+        "_candidate_scored_rows": selected["candidate"],
         "optimization_brier_weight": brier_weight,
         "valid_races": len(records), "valid_days": len(days),
         "minimum_training_races": min_history, "minimum_training_days": min_history_dates,
@@ -202,9 +203,17 @@ def compare_shadow_summaries(logloss: dict, brier: dict) -> dict:
         if not n:
             result[tp] = {"n_races": 0, "n_days": 0,
                           "log_loss_delta": None, "brier_delta": None,
-                          "top1_roi_delta": None}
+                          "top1_roi_delta": None,
+                          "candidate_minus_legacy_ci95": None}
             continue
         # 負値ならBrier対応候補が改善。ROIは双方の払戻確認数が一致する場合のみ比較。
+        old_rows = left.get("_candidate_scored_rows", [])
+        new_rows = right.get("_candidate_scored_rows", [])
+        if (len(old_rows) != n or len(new_rows) != n
+                or [(x["race_id"], x["race_date"]) for x in old_rows]
+                   != [(x["race_id"], x["race_date"]) for x in new_rows]):
+            raise ValueError("shadow candidates must share the same forward test set")
+        ci95 = _date_block_ci95(new_rows, old_rows)
         roi_ok = (old.get("top1_roi_races") == new.get("top1_roi_races")
                   and old.get("top1_roi") is not None
                   and new.get("top1_roi") is not None)
@@ -213,6 +222,7 @@ def compare_shadow_summaries(logloss: dict, brier: dict) -> dict:
             "n_days": left["forward_test_days"],
             "log_loss_delta": float(new["log_loss"] - old["log_loss"]),
             "brier_delta": float(new["brier"] - old["brier"]),
+            "candidate_minus_legacy_ci95": ci95,
             "top1_roi_delta": (
                 float(new["top1_roi"] - old["top1_roi"]) if roi_ok else None
             ),
@@ -273,6 +283,7 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
     # ID照合トークンは内部のみ。暗号化レポートにも書き出さない。
     for summary in (*legacy.values(), *challenger.values()):
         summary.pop("_comparison_token", None)
+        summary.pop("_candidate_scored_rows", None)
     return {
         "org": org,
         "method": "AI確率と同時刻市場確率の凸結合。過去の開催日だけで0〜1の重みを0.05刻みで選び、その翌日以降を逐次検証。市場オッズが不完全な場合は評価対象外",
