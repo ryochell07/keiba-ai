@@ -31,6 +31,8 @@ def test_readonly_evaluation_workflow_requires_main_owner_and_manual_dispatch():
     assert "deploy-pages" not in joined
     assert ".venv/bin/keiba" in joined
     assert "--read-only" in joined
+    # 実データ評価で研究候補の比較が必ず含まれること。
+    assert "--research" in joined
     assert "--encrypted-state" in joined
     assert "--output" in joined
     assert "keiba_ai.eval_artifact encrypt" in joined
