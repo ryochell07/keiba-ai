@@ -361,16 +361,16 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
             if "FROM prediction_run" in query:
                 return QueryResult([])
             if "FROM prediction_horse" in query:
-                return [
+                return QueryResult([
                     {"umaban": 1, "p_win_ai": .9, "p_win_market": .2,
                      "p_win_blend": .5, "p_win_used": .5},
                     {"umaban": 2, "p_win_ai": .1, "p_win_market": .8,
                      "p_win_blend": .5, "p_win_used": .5},
-                ]
+                ])
             if "SELECT umaban, finish_pos FROM result" in query:
-                return [(1, 1), (2, 2)]
+                return QueryResult([(1, 1), (2, 2)])
             if "FROM payout" in query:
-                return [("1", 250)]
+                return QueryResult([("1", 250)])
             raise AssertionError(f"unexpected SQL statement: {query[:35]}")
 
     monkeypatch.setattr(research, "_chronological_prestart_runs", lambda runs: runs)
