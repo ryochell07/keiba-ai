@@ -149,7 +149,7 @@ def add_market(df: pd.DataFrame, con: sqlite3.Connection, cutoff_min: int = 10,
     # スキーマはISO8601のJSTを前提とする。時差なしの履歴は安全側に除外し、
     # UTCオフセット混在でも「文字列順」で未来のオッズを使わないようにする。
     valid_zone = q["captured_at"].astype(str).str.contains(
-        r"(?:Z|[+-]\\d{2}:\\d{2})$", regex=True, na=False)
+        r"(?:Z|[+-]\d{2}:\d{2})$", regex=True, na=False)
     q = q.loc[valid_zone].copy()
     if q.empty:
         return out
