@@ -303,3 +303,32 @@ def test_walk_forward_default_output_never_exposes_private_races():
     assert "_candidate_scored_rows" not in output
     assert all(row["race_id"] not in serialized for row in rows)
     assert "race_id" not in serialized
+
+
+def test_shadow_challenger_roi_is_withheld_on_incomplete_payouts():
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    rows[-1] = {**rows[-1], "payout": {}}
+    old = walk_forward_blend(rows, min_history=50, include_private=True)
+    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25,
+                             include_private=True)
+    summary = compare_shadow_summaries(
+        {tp: old for tp in ("t30", "t10", "last")},
+        {tp: new for tp in ("t30", "t10", "last")},
+    )["t30"]
+    assert summary["n_races"] == 400
+    assert summary["top1_roi_delta"] is None
+    assert summary["candidate_minus_legacy_roi_ci95"] is None
+    assert summary["candidate_minus_legacy_ci95"] is not None
+
+
+def test_shadow_challenger_roi_ci_uses_complete_paired_results():
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    old = walk_forward_blend(rows, min_history=50, include_private=True)
+    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25,
+                             include_private=True)
+    summary = compare_shadow_summaries(
+        {tp: old for tp in ("t30", "t10", "last")},
+        {tp: new for tp in ("t30", "t10", "last")},
+    )["t30"]
+    assert summary["top1_roi_delta"] == pytest.approx(0.0)
+    assert summary["candidate_minus_legacy_roi_ci95"] == pytest.approx([0.0, 0.0])
