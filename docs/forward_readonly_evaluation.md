@@ -30,6 +30,8 @@
 - `evaluation_coverage.by_time_point.*.runner_set_mismatch`: 予測台帳に保存した馬番集合と、確定結果の実際の出走馬番集合が異なるレース。後から取消・除外が判明した場合などを含み、評価対象外
 - `evaluation_coverage.by_time_point.*.multiple_or_missing_winners`: 同着1着など勝ち馬が一意でないレース。従来の単一勝者のLogLoss/Brierでは比較不能として除外
 - `n_races_with_selected_prestart_run`: 発走前の予測履歴と**結果の行が1件以上**存在したレース数（勝ち馬の有無・全頭整合性の検証前）。勝ち馬の結果だけ欠損しているレースも母数に残して除外原因に計上する。結果行が一切存在しないレースは完了・未取得を区別できないため、この母数に含めない。`n_races` は整合性検証後の券種別集計レース数
+- `evaluation_coverage.by_time_point.*.outcome_valid` / `outcome_coverage_rate`: 結果の馬番集合と単一勝ち馬の条件を満たした件数・選択予測に対する割合。**結果が不完全なために評価できないレース**を把握する
+- `evaluation_coverage.by_time_point.*.paired_rate_after_outcome_validation`: 正しい結果が確認できたレースを分母とした3モデルの比較可能率。オッズ取得・予測確率の不足だけを評価する補助指標。結果の整合性を満たすレースが0件なら `null`
 - `evaluation_coverage.by_time_point.*.selected_runs`: 各時点で選択された発走前予測
 - `ai_scored`: AIの確率と着順だけで評価可能なもの
 - `fresh_complete_odds`: 全頭・同時刻の単勝オッズが元の非確定取得履歴と一致し、発走前・予測時点60分以内であるもの
