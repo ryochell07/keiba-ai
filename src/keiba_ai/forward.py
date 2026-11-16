@@ -216,7 +216,9 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
     tp_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
     final_rows: dict[str, dict[str, list]] = {tp: defaultdict(list) for tp in TIME_POINTS}
     # 時点ごとの評価対象数。欠損による見かけの精度向上を検知できるよう母数を保持する。
-    eligibility = {tp: {"selected_runs": 0, "ai_scored": 0, "fresh_complete_odds": 0,
+    eligibility = {tp: {"selected_runs": 0, "ai_scored": 0, "deployed_scored": 0,
+                        "used_model_counts": {"ai": 0, "market": 0, "blend": 0, "other": 0},
+                        "fresh_complete_odds": 0,
                         "paired_scored": 0, "odds_metadata_invalid": 0,
                         "odds_timing_invalid": 0, "odds_snapshot_mismatch": 0,
                         "paired_model_probabilities_invalid": 0} for tp in TIME_POINTS}
@@ -226,6 +228,8 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
             continue
         eligibility[tp]["selected_runs"] += 1
         model_versions[tp].add(run["model_version_id"])
+        mode = run["used_model"] if run["used_model"] in ("ai", "market", "blend") else "other"
+        eligibility[tp]["used_model_counts"][mode] += 1
         horses = con.execute("SELECT * FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)).fetchall()
         fin = {r[0]: r[1] for r in con.execute("SELECT umaban, finish_pos FROM result WHERE race_id=?", (rid,))}
         pay = payouts.get((rid, "win"), {})
@@ -234,6 +238,10 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         if ai_all:
             tp_rows[tp]["ai_all_races"].append(ai_all)
             eligibility[tp]["ai_scored"] += 1
+        deployed = _score(horses, "p_win_used", fin, pay, evaluate_ev=False)
+        if deployed:
+            tp_rows[tp]["used_all_races"].append(deployed)
+            eligibility[tp]["deployed_scored"] += 1
         if run["odds_status"] != "complete" or not run["odds_same_time"]:
             eligibility[tp]["odds_metadata_invalid"] += 1
         elif not _fresh_prestart_odds(run):
@@ -325,6 +333,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
               "excluded_runs_without_verified_prestart_time": invalid_prestart_runs,
               "legacy_ev_basis_note": "rows の odds_basis=cutoff は既存互換ラベル。実際はレースごとの発走前最終予測であり、必ずしも発走10分前のオッズではない。発走前・同時刻・60分以内の条件を満たす場合のみEVを集計する。",
+              "deployed_model_note": "by_time_point.used_all_races は実際に採用・表示した p_win_used を集計。選択されたAI/市場/合成の候補比較とは別の母数となる可能性がある。used_model_counts は選択した予測の内訳（精度評価の対象数ではない）",
               "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。区間は開催日単位の探索的ブートストラップで、統計的有意性・将来回収率を保証しない",
                                           "by_time_point": comparisons},
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
