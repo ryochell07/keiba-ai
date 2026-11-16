@@ -42,6 +42,29 @@ umask 077
 
 **運用上の重要事項：** ChatGPTや公開のIssue/PR/Actionsログに秘密鍵を貼らない。復号したDBをGitHubへアップロードしない。上記は利用者のローカル端末やアクセス制御された環境で実行する手順で、**現段階では実運用DBでの実行結果がない**。秘密鍵を利用するGitHub Actionsを新設する場合は、その実行コードを別途レビューし、本番権限付与は明示的に承認した後に行う。PR上の未承認コードに秘密鍵を渡して実行することは避ける。
 
+## 手動GitHub Actions評価（レビュー後にのみ有効）
+
+検証用PRに `.github/workflows/forward-evaluate-readonly.yml` を追加した。**この時点ではDraftブランチ内にあるだけで、秘密鍵付きワークフローの実行はしていない**。GitHubの手動ワークフロー登録には、独立したコード・権限レビューを終えたうえでデフォルトブランチへ明示的に採用する必要がある。今回の作業ではmainへのマージやSecretを使う実行を行わない。
+
+レビュー・採用後のワークフローは、GitHubのリポジトリ所有者が `main` で `workflow_dispatch` を起動した場合だけ動く。権限は `contents: read` のみ。バックアップ取得に既存の状態復元アクションは使用せず、Releaseから暗号化された `keiba-state.enc` をダウンロードするだけ。採用モデル・DB・Releaseへの書込み、再学習、ページ更新、スケジュール実行は一切しない。本番状態書き込み用の同時実行ロック `keiba-state` も使用しない。
+
+集計データはジョブの一時ディレクトリに `0600` で作成し、すぐにAES-GCMで別途暗号化する。レポートの暗号鍵は `KEIBA_STATE_KEY` からHKDFで用途分離して生成するため、**GitHub Actionsのartifactとして公開されるのは暗号化ファイルだけ**。メトリクスや鍵は公開ログに出さない。暗号化済みartifactの保存期間は3日。一時ファイルは通常終了・エラー時とも削除処理を試みるが、異常なホスト停止による永続消去までは保証できない。
+
+レビュー後に手動実行できるようになったら、リポジトリのActions画面から `forward-evaluate-readonly` を開き、Run workflowで **branch: main**、`org: BOTH`（またはNAR/JRA）を選択する。完了したrunの `forward-evaluation-encrypted` artifactをローカルにダウンロードするか、GitHub CLIで次のように取得する。
+
+```bash
+gh run download <RUN_ID> --repo ryochell07/keiba-ai \
+  --name forward-evaluation-encrypted --dir /path/to/private-workspace
+
+# 元の KEIBA_STATE_KEY をローカルの秘密情報管理から設定したうえで
+umask 077
+.venv/bin/python -m keiba_ai.eval_artifact decrypt \
+  --input /path/to/private-workspace/forward-evaluation.enc \
+  --output /path/to/private-workspace/forward-evaluation.json
+```
+
+**注意：** GitHub Secretsの設定画面から秘密鍵の値を後で読み戻すことはできない。元の鍵を安全に保管していない場合、artifactは復号できない。鍵の共有やチャット貼付を依頼せず、安全な復号方法・アクセス経路を先に確保する必要がある。評価結果のJSONをそのまま公開Issue・PR・Actionsログに掲載しない。
+
 ## レポートの読み方
 
 - `excluded_runs_without_verified_prestart_time`: 発走予定時刻が欠ける・形式が不正・予測が発走予定時刻以降など、**発走前だったことを検証できない**予測履歴の除外件数。予測時刻・発走時刻はタイムゾーン付き日時として比較し、同時点内の選択も実際の時系列で行う
