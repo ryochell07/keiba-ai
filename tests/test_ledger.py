@@ -418,3 +418,20 @@ def test_different_win_odds_timestamps_do_not_mix_market_predictions(world, monk
     assert run["blend_alpha"] is None
     assert all(h[0] is None for h in con.execute(
         "SELECT p_win_market FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)))
+
+
+def test_market_readiness_transition_is_recorded_even_when_odds_unchanged(world, monkeypatch):
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(95), "09", 11)
+    race.race_date, race.post_time = "2030-03-28", "16:00"
+    save_race(con, race, observed_at="2030-03-28T08:00:00+09:00")
+    save_odds(con, race.race_id, [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-28T09:00:00+09:00", False, "t")
+    assert predict_races(con, "JRA", race.race_date, at="2030-03-28T09:05:00+09:00")["recorded"] == 1
+    assert predict_races(con, "JRA", race.race_date, at="2030-03-28T10:05:00+09:00")["recorded"] == 1
+    history = con.execute(
+        "SELECT used_model FROM prediction_run WHERE race_id=? ORDER BY predicted_at",
+        (race.race_id,),
+    ).fetchall()
+    assert [r["used_model"] for r in history] == ["market", "ai"]
