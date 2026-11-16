@@ -113,6 +113,9 @@ def test_win_ev_requires_nonfinal_snapshot_matching_all_horses():
     con.execute("UPDATE odds_snapshot SET odds=2.0 WHERE combo='1'")
     con.execute("UPDATE odds_snapshot SET is_final=1 WHERE combo='2'")
     assert not _win_odds_same_time(con, "r", horses, stamp)
+    con.execute("UPDATE odds_snapshot SET is_final=0 WHERE combo='2'")
+    con.execute("INSERT INTO odds_snapshot VALUES ('r','win','3',?,10.0,0)", (stamp,))
+    assert not _win_odds_same_time(con, "r", horses, stamp)  # 取消馬の余分な正オッズ
 
 
 def test_readonly_reconcile_does_not_touch_database_or_report(tmp_path, monkeypatch):
@@ -395,3 +398,9 @@ def test_latest_complete_win_odds_recovers_consistent_snapshot_only():
     stale = datetime.fromisoformat("2030-03-02T11:30:01+09:00")
     later_post = datetime.fromisoformat("2030-03-02T12:00:00+09:00")
     assert latest_complete_win_odds(con, "r", [1, 2], stale, later_post) is None
+    # 当該レースに余分な正オッズの馬番がある場合、
+    # 全頭の確率を残存馬だけで再正規化してしまうことを防ぐ。
+    con.execute(
+        "INSERT INTO odds_snapshot VALUES ('r','win','3','2030-03-02T10:00:00+09:00',12.0,NULL,0)"
+    )
+    assert latest_complete_win_odds(con, "r", [1, 2], now, post) is None
