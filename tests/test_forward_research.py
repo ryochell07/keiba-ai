@@ -352,10 +352,14 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
                 "odds_captured_at": "2030-04-01T12:00:00+09:00",
             }
 
+    class QueryResult(list):
+        def fetchall(self):
+            return list(self)
+
     class FakeReadonlyConnection:
         def execute(self, query, params=()):
             if "FROM prediction_run" in query:
-                return []
+                return QueryResult([])
             if "FROM prediction_horse" in query:
                 return [
                     {"umaban": 1, "p_win_ai": .9, "p_win_market": .2,
