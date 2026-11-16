@@ -61,6 +61,26 @@ def _nar(con, sources):
     return NarCsvProvider(conf, PoliteClient("nar_csv", conf, con, max_requests=sources["limits"]["max_requests_per_run"]))
 
 
+def _readonly_reconcile(args) -> int:
+    """DB・バックアップ・公開レポートを一切更新せず、保存済み予測を集計する。"""
+    import sqlite3
+    from .forward import reconcile
+
+    uri = config.DB_PATH.resolve().as_uri() + "?mode=ro"
+    with sqlite3.connect(uri, uri=True, timeout=60) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        orgs = [args.org] if args.org else [
+            r[0] for r in con.execute("SELECT DISTINCT org FROM race ORDER BY org")
+        ]
+        for org in orgs:
+            report = reconcile(con, org, persist=False, write_report=False)
+            # 馬別予測やオッズの生データは出さない。公開CIでは出力リダイレクトも推奨。
+            fields = ("org", "n_races", "evaluation_coverage", "paired_model_comparison", "by_time_point")
+            print(json.dumps({k: report[k] for k in fields}, ensure_ascii=False, indent=1))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="keiba")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -91,6 +111,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sys.excepthook, warnings.showwarning = _public_excepthook, _public_warning
+    if args.cmd == "reconcile" and args.read_only:
+        return _readonly_reconcile(args)
     config.ensure_dirs()
     if args.cmd == "state":  # 復元先の DB を開いてはいけない (WAL が残って復元した DB を壊す)
         return args.func(args, None, None) or 0
