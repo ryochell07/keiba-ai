@@ -48,13 +48,16 @@ def latest_odds(con: sqlite3.Connection, race_id: str, at: str | None = None, in
     at = at or datetime.now(JST).isoformat(timespec="seconds")
     # 予測時には、日時だけでなく is_final フラグでも確定オッズを拒否する。
     # データ提供元が確定オッズを通常のタイムスタンプで保存しても先読みしない。
-    criterion = ("(captured_at='final' OR (captured_at<>'final' AND captured_at<=?))"
-                 if include_final else "(is_final=0 AND captured_at<>'final' AND captured_at<=?)")
+    # SQLite の julianday はISO8601のUTCオフセットを正規化する。
+    # 文字列の<=比較では時差のある時刻の前後を誤るため使用しない。
+    criterion = ("(captured_at='final' OR (captured_at<>'final' AND julianday(captured_at)<=julianday(?)))"
+                 if include_final else "(is_final=0 AND captured_at<>'final' AND julianday(captured_at)<=julianday(?))")
     rows = con.execute(
         f"""SELECT bet_type, combo, odds, odds_max, captured_at FROM odds_snapshot
-           WHERE race_id=? AND {criterion}""", (race_id, at)).fetchall()
+           WHERE race_id=? AND {criterion}
+           ORDER BY (captured_at='final'), julianday(captured_at)""", (race_id, at))
     out: dict[tuple[str, str], dict] = {}
-    for r in sorted(rows, key=lambda x: (x["captured_at"] == "final", x["captured_at"])):
+    for r in rows:
         out[(r["bet_type"], r["combo"])] = dict(r)
     return out
 
