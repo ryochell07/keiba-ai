@@ -113,3 +113,51 @@ def test_win_ev_requires_nonfinal_snapshot_matching_all_horses():
     con.execute("UPDATE odds_snapshot SET odds=2.0 WHERE combo='1'")
     con.execute("UPDATE odds_snapshot SET is_final=1 WHERE combo='2'")
     assert not _win_odds_same_time(con, "r", horses, stamp)
+
+
+def test_readonly_reconcile_does_not_touch_database_or_report(tmp_path, monkeypatch):
+    import sqlite3
+    from keiba_ai import config
+    from keiba_ai.forward import reconcile
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript("""
+        CREATE TABLE prediction_run (
+            race_id TEXT, org TEXT, predicted_at TEXT, scheduled_post_at TEXT);
+        CREATE TABLE result (race_id TEXT, umaban INTEGER, finish_pos INTEGER);
+        CREATE TABLE race (race_id TEXT, org TEXT, race_date TEXT, post_time TEXT);
+        CREATE TABLE odds_snapshot (
+            race_id TEXT, combo TEXT, odds REAL, is_final INTEGER, bet_type TEXT);
+        CREATE TABLE backtest_result (backtest_id TEXT);
+    """)
+    con.execute("PRAGMA query_only = ON")
+    monkeypatch.setattr(config, "REPORTS", tmp_path / "untouched")
+    result = reconcile(con, "NAR", persist=False, write_report=False)
+    assert result["n_races"] == 0
+    assert result["evaluation_coverage"]["by_time_point"]["t10"]["selected_runs"] == 0
+    assert not (tmp_path / "untouched").exists()
+
+
+def test_readonly_cli_opens_db_without_schema_migration(tmp_path, monkeypatch, capsys):
+    import sqlite3
+    from keiba_ai import config
+    from keiba_ai.cli import main
+
+    db = tmp_path / "existing.sqlite"
+    with sqlite3.connect(db) as con:
+        con.executescript("""
+            CREATE TABLE prediction_run (
+                race_id TEXT, org TEXT, predicted_at TEXT, scheduled_post_at TEXT);
+            CREATE TABLE result (race_id TEXT, umaban INTEGER, finish_pos INTEGER);
+            CREATE TABLE race (race_id TEXT, org TEXT, race_date TEXT, post_time TEXT);
+            CREATE TABLE odds_snapshot (
+                race_id TEXT, combo TEXT, odds REAL, is_final INTEGER, bet_type TEXT);
+        """)
+    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(config, "REPORTS", tmp_path / "uncreated")
+    assert main(["reconcile", "--org", "NAR", "--read-only"]) == 0
+    assert '"n_races": 0' in capsys.readouterr().out
+    assert not (tmp_path / "uncreated").exists()
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT name FROM sqlite_master WHERE name='backtest_result'").fetchone() is None
