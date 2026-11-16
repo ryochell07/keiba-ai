@@ -54,6 +54,24 @@ def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay:
             "ev_n": len(ev), "ev_ret": sum(pay.get(str(u), 0) for u in ev)}
 
 
+def _place_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sqlite3.Row], captured_at: str | None) -> bool:
+    """複勝EVは単勝と同一取得時刻の複勝オッズが全頭そろう場合のみ評価する。"""
+    if not captured_at or not horses:
+        return False
+    rows = con.execute(
+        """SELECT combo,odds FROM odds_snapshot
+           WHERE race_id=? AND bet_type='place' AND captured_at=? AND is_final=0""",
+        (race_id, captured_at),
+    ).fetchall()
+    available = {str(r["combo"]): r["odds"] for r in rows if r["odds"] is not None and r["odds"] > 0}
+    return all(
+        str(h["umaban"]) in available
+        and h["place_odds"] is not None
+        and abs(available[str(h["umaban"])] - h["place_odds"]) < 1e-9
+        for h in horses
+    )
+
+
 def reconcile(con: sqlite3.Connection, org: str) -> dict:
     """台帳の発走前の予測だけを集計する。結果は別テーブルから紐付け、台帳は変更しない。"""
     runs = con.execute(
@@ -124,6 +142,8 @@ def reconcile(con: sqlite3.Connection, org: str) -> dict:
         if run["odds_status"] != "complete" or not run["odds_same_time"]:
             continue
         for bet, col in (("win", "win_odds"), ("place", "place_odds")):
+            if bet == "place" and not _place_odds_same_time(con, rid, horses, run["odds_captured_at"]):
+                continue
             pay = payouts.get((rid, bet))
             if not pay or bet not in probs:
                 continue
