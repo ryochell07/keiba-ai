@@ -332,3 +332,60 @@ def test_shadow_challenger_roi_ci_uses_complete_paired_results():
     )["t30"]
     assert summary["top1_roi_delta"] == pytest.approx(0.0)
     assert summary["candidate_minus_legacy_roi_ci95"] == pytest.approx([0.0, 0.0])
+
+
+def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch):
+    """DBの問合せ境界から研究候補の評価・公開集計までを結合確認する。"""
+    import json
+    from keiba_ai import forward_research as research
+
+    records = [_record(day, race) for day in range(1, 6) for race in range(25)]
+    selected = {}
+    for rec in records:
+        for point in research.POINTS:
+            prediction_id = f"{rec['race_id']}-{point}"
+            selected[(rec["race_id"], point)] = {
+                "race_date": rec["race_date"],
+                "prediction_id": prediction_id,
+                "odds_status": "complete",
+                "odds_same_time": 1,
+                "odds_captured_at": "2030-04-01T12:00:00+09:00",
+            }
+
+    class FakeReadonlyConnection:
+        def execute(self, query, params=()):
+            if "FROM prediction_run" in query:
+                return []
+            if "FROM prediction_horse" in query:
+                return [
+                    {"umaban": 1, "p_win_ai": .9, "p_win_market": .2,
+                     "p_win_blend": .5, "p_win_used": .5},
+                    {"umaban": 2, "p_win_ai": .1, "p_win_market": .8,
+                     "p_win_blend": .5, "p_win_used": .5},
+                ]
+            if "SELECT umaban, finish_pos FROM result" in query:
+                return [(1, 1), (2, 2)]
+            if "FROM payout" in query:
+                return [("1", 250)]
+            raise AssertionError(f"unexpected SQL statement: {query[:35]}")
+
+    monkeypatch.setattr(research, "_chronological_prestart_runs", lambda runs: runs)
+    monkeypatch.setattr(research, "_select", lambda runs: selected)
+    monkeypatch.setattr(research, "_result_integrity_reason",
+                        lambda con, race_id, rows: None)
+    monkeypatch.setattr(research, "_fresh_prestart_odds", lambda run: True)
+    monkeypatch.setattr(research, "_win_odds_same_time",
+                        lambda con, race_id, rows, captured: True)
+
+    report = research.evaluate_shadow(FakeReadonlyConnection(), "NAR")
+    for point in research.POINTS:
+        assert report["by_time_point"][point]["forward_test_races"] == 75
+        assert (report["brier_regularized_challenger"]["by_time_point"][point]
+                ["forward_test_races"] == 75)
+        assert report["challenger_minus_legacy"][point]["n_races"] == 75
+
+    encoded = json.dumps(report, ensure_ascii=False)
+    assert "_candidate_scored_rows" not in encoded
+    assert "_comparison_token" not in encoded
+    assert "race_id" not in encoded
+    assert all(rec["race_id"] not in encoded for rec in records)
