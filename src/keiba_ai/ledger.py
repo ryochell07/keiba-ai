@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from . import config
+from .db import JST
 from .gbm import RaceModel, softmax_by_race
 
 # 同じ時点区分の中でオッズだけが変わった場合に、次の記録まで空ける分数。容量を抑えるため
@@ -26,7 +27,7 @@ def time_point(now: datetime, post: datetime | None, race_date: str) -> tuple[st
     mins = (post - now).total_seconds() / 60
     # UTCなど別のオフセットから呼ばれても、開催日の判定は日本時間で統一。
     # naive datetime は既存互換のためJSTとして扱う。
-    local_day = now.astimezone(config.JST).date() if now.tzinfo is not None else now.date()
+    local_day = now.astimezone(JST).date() if now.tzinfo is not None else now.date()
     if local_day.isoformat() < race_date:
         return "day_before", mins
     if mins > 45:
