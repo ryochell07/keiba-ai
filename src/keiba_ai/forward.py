@@ -106,11 +106,14 @@ def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
 def _score(horses: list[sqlite3.Row], col: str, fin: dict[int, int | None], pay: dict[str, int], odds_col: str = "win_odds", odds: dict[int, float] | None = None, *, evaluate_ev: bool = True) -> dict | None:
     ps = {h["umaban"]: h[col] for h in horses}
     # 不正な確率を集計するとNaNや見かけ上の高精度が発生する。確率の和も検証する。
-    if (not ps or any(v is None or not np.isfinite(v) or v < 0 or v > 1 for v in ps.values())
+    if (not ps or len(ps) != len(horses) or set(ps) != set(fin)
+            or any(v is None or not np.isfinite(v) or v < 0 or v > 1 for v in ps.values())
             or abs(sum(ps.values()) - 1.0) > 1e-4):
         return None
     winners = [u for u in ps if fin.get(u) == 1]
-    if not winners:
+    # 勝ち馬が複数いる同着レースは、単一正解クラスのLogLoss/Brierでは
+    # 正しく採点できない。多重正解用の評価定義を設けるまでは除外する。
+    if len(winners) != 1:
         return None
     top = max(ps, key=ps.get)
     # 勝ち馬の払戻が揃うことを、レース単位の払戻取得済みの根拠とする。
@@ -211,6 +214,30 @@ def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool
         return False
 
 
+def _result_integrity_reason(con: sqlite3.Connection, race_id: str, horses: list[sqlite3.Row]) -> str | None:
+    """結果の対象馬が保存された予測対象馬と一致するか検査する。
+
+    結果が一部欠けている、出走取消が後から判明した、同着1着の場合は
+    単一勝ち馬の確率評価や購入可能EVから安全側に除外する。
+    """
+    entry_rows = con.execute("SELECT umaban FROM entry WHERE race_id=?", (race_id,)).fetchall()
+    result_rows = con.execute(
+        "SELECT umaban, finish_pos, status FROM result WHERE race_id=?", (race_id,)
+    ).fetchall()
+    entry_ids = {r["umaban"] for r in entry_rows}
+    result_ids = {r["umaban"] for r in result_rows}
+    if (not entry_ids or not result_rows or len(entry_rows) != len(entry_ids)
+            or entry_ids != result_ids):
+        return "incomplete_results"
+    starters = {r["umaban"] for r in result_rows if r["status"] not in ("scratched", "excluded")}
+    predicted = [h["umaban"] for h in horses]
+    if not predicted or len(predicted) != len(set(predicted)) or set(predicted) != starters:
+        return "runner_set_mismatch"
+    if sum(r["finish_pos"] == 1 for r in result_rows) != 1:
+        return "multiple_or_missing_winners"
+    return None
+
+
 def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_report: bool = True) -> dict:
     """発走前予測と結果を照合する。persist=False ならDBを変更せず、write_report=False ならファイルを作らない。"""
     candidates = con.execute(
@@ -237,7 +264,9 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
     eligibility = {tp: {"selected_runs": 0, "ai_scored": 0, "deployed_scored": 0,
                         "used_model_counts": {"ai": 0, "market": 0, "blend": 0, "other": 0},
                         "fresh_complete_odds": 0,
-                        "paired_scored": 0, "odds_metadata_invalid": 0,
+                        "paired_scored": 0, "incomplete_results": 0,
+                        "runner_set_mismatch": 0, "multiple_or_missing_winners": 0,
+                        "odds_metadata_invalid": 0,
                         "odds_timing_invalid": 0, "odds_snapshot_mismatch": 0,
                         "paired_model_probabilities_invalid": 0} for tp in TIME_POINTS}
     model_versions = {tp: set() for tp in TIME_POINTS}
@@ -249,6 +278,10 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         mode = run["used_model"] if run["used_model"] in ("ai", "market", "blend") else "other"
         eligibility[tp]["used_model_counts"][mode] += 1
         horses = con.execute("SELECT * FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)).fetchall()
+        outcome_issue = _result_integrity_reason(con, rid, horses)
+        if outcome_issue:
+            eligibility[tp][outcome_issue] += 1
+            continue
         fin = {r[0]: r[1] for r in con.execute("SELECT umaban, finish_pos FROM result WHERE race_id=?", (rid,))}
         pay = payouts.get((rid, "win"), {})
         # AI単独の全レース評価ではオッズが不完全な場合があるためEVを算出しない。
@@ -301,8 +334,10 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         if run is None:
             continue
         rid = run["race_id"]
-        groups.add(rid)
         horses = con.execute("SELECT * FROM prediction_horse WHERE prediction_id=? ORDER BY umaban", (run["prediction_id"],)).fetchall()
+        if _result_integrity_reason(con, rid, horses):
+            continue
+        groups.add(rid)
         um, wk = [h["umaban"] for h in horses], [h["waku"] for h in horses]
         probs = all_bet_probs(um, wk, np.array([h["strength_used"] for h in horses]), tuple(json.loads(run["taus_used"])), org)
         for bet, combos in probs.items():
@@ -350,12 +385,13 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         counts["mixed_model_versions"] = len(model_versions[tp]) > 1
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
               "excluded_runs_without_verified_prestart_time": invalid_prestart_runs,
+              "n_races_with_selected_prestart_run": len(last),
               "legacy_ev_basis_note": "rows の odds_basis=cutoff は既存互換ラベル。実際はレースごとの発走前最終予測であり、必ずしも発走10分前のオッズではない。発走前・同時刻・60分以内の条件を満たす場合のみEVを集計する。",
               "deployed_model_note": "by_time_point.used_all_races は実際に採用・表示した p_win_used を集計。選択されたAI/市場/合成の候補比較とは別の母数となる可能性がある。used_model_counts は選択した予測の内訳（精度評価の対象数ではない）",
               "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。区間は開催日単位の探索的ブートストラップで、統計的有意性・将来回収率を保証しない",
                                           "by_time_point": comparisons},
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
-              "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、オッズは全頭同時刻・元スナップショットと一致・予測時点60分以内・発走前のみ",
+              "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、結果の全出走馬一致・単一勝ち馬も確認する。オッズは全頭同時刻・元スナップショットと一致・予測時点60分以内・発走前のみ",
                                       "by_time_point": eligibility},
               "final_odds_reference": {"purchasable": False, "note": "確定オッズは発走後に確定する値で、購入時点の比較ではない",
                                        "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in final_rows.items() if d}}}
