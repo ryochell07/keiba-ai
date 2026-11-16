@@ -148,6 +148,9 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     assert counts["deployed_scored"] == 1
     assert counts["used_model_counts"] == {"ai": 0, "market": 0, "blend": 1, "other": 0}
     assert counts["paired_scored"] == 1
+    assert counts["outcome_valid"] == 1
+    assert counts["outcome_coverage_rate"] == 1.0
+    assert counts["paired_rate_after_outcome_validation"] == 1.0
     assert counts["odds_snapshot_mismatch"] == 0
     assert counts["n_model_versions"] == 1
     assert counts["mixed_model_versions"] is False
@@ -185,6 +188,9 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     no_winner = reconcile(con, "JRA")
     nc = no_winner["evaluation_coverage"]["by_time_point"]["morning"]
     assert nc["selected_runs"] == 1
+    assert nc["outcome_valid"] == 0
+    assert nc["outcome_coverage_rate"] == 0.0
+    assert nc["paired_rate_after_outcome_validation"] is None
     assert nc["multiple_or_missing_winners"] == 1
     assert no_winner["n_races_with_selected_prestart_run"] == 1
     assert no_winner["n_races"] == 0
