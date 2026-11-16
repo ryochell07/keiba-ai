@@ -48,7 +48,7 @@ def odds_quality(con: sqlite3.Connection, day: str, org: str, now: datetime | No
         if not active:
             missing.append(1.0)
             continue
-        times = sorted(stamp for stamp, positive in snapshots.items() if active <= positive)
+        times = sorted(stamp for stamp, positive in snapshots.items() if active == positive)
         snaps += len(times)
         latest = max(snapshots) if snapshots else None
         # 欠損率は最後の発走前スナップショットにおける現役出走馬の欠損割合。
