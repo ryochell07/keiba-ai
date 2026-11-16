@@ -66,7 +66,7 @@ jobs:
           case "$EVAL_ORG" in BOTH|NAR|JRA) ;; *) exit 2 ;; esac
           workdir="$RUNNER_TEMP/keiba-eval"
           trap 'rm -f "$workdir/metrics.json" "$workdir/keiba-state.enc" "$workdir/evaluation.stdout" "$workdir/evaluation.stderr" "$workdir/encryption.stdout" "$workdir/encryption.stderr"' EXIT
-          args=(reconcile --read-only --encrypted-state "$workdir/keiba-state.enc" \
+          args=(reconcile --read-only --research --encrypted-state "$workdir/keiba-state.enc" \
                 --output "$workdir/metrics.json")
           if [ "$EVAL_ORG" != BOTH ]; then args+=(--org "$EVAL_ORG"); fi
           # エラーのtracebackにも馬別情報が混ざり得るため、成功・失敗とも非公開に。
