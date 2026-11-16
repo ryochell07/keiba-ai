@@ -61,6 +61,102 @@ def _nar(con, sources):
     return NarCsvProvider(conf, PoliteClient("nar_csv", conf, con, max_requests=sources["limits"]["max_requests_per_run"]))
 
 
+def _readonly_reconcile_database(args, path, *, immutable: bool = False) -> int:
+    """評価指標のみを取り出す。暗号化バックアップの場合は必ず安全なファイルへ保存。"""
+    import os
+    import sqlite3
+    from pathlib import Path
+    from .forward import reconcile
+
+    uri = path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
+    with sqlite3.connect(uri, uri=True, timeout=60) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        if immutable:
+            # 暗号の認証成功はSQLiteファイルの論理的な整合性の保証ではない。
+            # スナップショットを更新せず、DB破損なら数値評価を拒否する。
+            try:
+                if con.execute("PRAGMA quick_check(1)").fetchone()[0] != "ok":
+                    raise ValueError("評価用データベースの整合性に問題があります")
+            except sqlite3.DatabaseError as exc:
+                raise ValueError("評価用データベースを安全に読み取れません") from exc
+        orgs = [args.org] if args.org else [
+            r[0] for r in con.execute("SELECT DISTINCT org FROM race ORDER BY org")
+        ]
+        summaries = []
+        for org in orgs:
+            report = reconcile(con, org, persist=False, write_report=False)
+            fields = ("org", "n_races", "n_races_with_selected_prestart_run",
+                      "excluded_runs_without_verified_prestart_time",
+                      "evaluation_coverage", "paired_model_comparison", "by_time_point")
+            if getattr(args, "research", False):
+                from .forward_research import evaluate_shadow
+                report["shadow_research"] = evaluate_shadow(con, org)
+                fields += ("shadow_research",)
+            summaries.append({k: report[k] for k in fields})
+    payload = json.dumps(summaries[0] if len(summaries) == 1 else summaries,
+                         ensure_ascii=False, indent=1) + "\n"
+    if args.output:
+        dest = Path(args.output).expanduser()
+        # repo内に秘密の性能集計を誤コミットしない。シンボリックリンクを含む
+        # 保存先の実パスで検査し、既存ファイルは上書き不可。
+        resolved = dest.resolve()
+        if resolved.is_relative_to(config.ROOT.resolve()):
+            raise ValueError("評価結果を公開リポジトリ内へ保存することはできません")
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                out.write(payload)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
+    else:
+        # 非暗号化DBでの従来動作だけ標準出力を許可。
+        print(payload, end="")
+    return 0
+
+
+def _readonly_reconcile(args) -> int:
+    """既存DBまたは隔離復号した状態アーカイブを一切永続的に変更せず評価する。"""
+    if not args.encrypted_state:
+        return _readonly_reconcile_database(args, config.DB_PATH)
+
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import io
+    import shutil
+    import tarfile
+
+    from .state import MAGIC, _key
+
+    path = Path(args.encrypted_state).expanduser()
+    raw = path.read_bytes()
+    if not raw.startswith(MAGIC) or len(raw) <= len(MAGIC) + 12 + 16:
+        raise ValueError("状態ファイルの形式が不正です")
+    nonce = raw[len(MAGIC):len(MAGIC) + 12]
+    try:
+        plaintext = AESGCM(_key()).decrypt(nonce, raw[len(MAGIC) + 12:], MAGIC)
+    except InvalidTag as exc:
+        raise ValueError("状態ファイルの復号に失敗しました。鍵またはファイルを確認してください") from exc
+    # 本番の config.DB_PATH / state.unpack / config.ensure_dirs は一切呼ばない。
+    # 復元先は他ユーザーから閲覧できない一時フォルダ。終了時に完全削除する。
+    with TemporaryDirectory(prefix="keiba-readonly-eval-") as tmp:
+        target = Path(tmp) / "keiba.db"
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:gz") as archive:
+            member = archive.getmember("keiba.db")
+            if not member.isfile() or member.size <= 0 or member.size > 8 * 1024**3:
+                raise ValueError("状態内のDBサイズが不正です")
+            source = archive.extractfile(member)
+            if source is None:
+                raise ValueError("状態内にDBがありません")
+            with source, target.open("xb") as dest:
+                shutil.copyfileobj(source, dest)
+        target.chmod(0o600)
+        return _readonly_reconcile_database(args, target, immutable=True)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="keiba")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -91,6 +187,16 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sys.excepthook, warnings.showwarning = _public_excepthook, _public_warning
+    if args.cmd == "reconcile" and args.encrypted_state and not args.read_only:
+        ap.error("--encrypted-state は --read-only と併用してください")
+    if args.cmd == "reconcile" and args.encrypted_state and not args.output:
+        ap.error("--encrypted-state では --output に非公開ファイルの保存先を指定してください")
+    if args.cmd == "reconcile" and args.output and not args.read_only:
+        ap.error("--output は --read-only と併用してください")
+    if args.cmd == "reconcile" and args.research and not args.read_only:
+        ap.error("--research は --read-only と併用してください")
+    if args.cmd == "reconcile" and args.read_only:
+        return _readonly_reconcile(args)
     config.ensure_dirs()
     if args.cmd == "state":  # 復元先の DB を開いてはいけない (WAL が残って復元した DB を壊す)
         return args.func(args, None, None) or 0
