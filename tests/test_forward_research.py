@@ -118,8 +118,8 @@ def test_brier_aware_shadow_rejects_invalid_objective_weight():
 
 def test_challenger_comparison_reports_same_sample_deltas():
     rows = [_record(d, r) for d in range(1, 6) for r in range(25)]
-    legacy = walk_forward_blend(rows, min_history=50)
-    challenger = walk_forward_blend(rows, min_history=50, brier_weight=0.25)
+    legacy = walk_forward_blend(rows, min_history=50, include_private=True)
+    challenger = walk_forward_blend(rows, min_history=50, brier_weight=0.25, include_private=True)
     summary = compare_shadow_summaries(
         {"t30": legacy, "t10": legacy, "last": legacy},
         {"t30": challenger, "t10": challenger, "last": challenger},
@@ -138,8 +138,8 @@ def test_challenger_comparison_reports_same_sample_deltas():
 
 def test_challenger_comparison_rejects_different_evaluation_sizes():
     rows = [_record(d, r) for d in range(1, 6) for r in range(25)]
-    legacy = walk_forward_blend(rows, min_history=50)
-    mismatch = walk_forward_blend(rows[:-1], min_history=50, brier_weight=0.25)
+    legacy = walk_forward_blend(rows, min_history=50, include_private=True)
+    mismatch = walk_forward_blend(rows[:-1], min_history=50, brier_weight=0.25, include_private=True)
     with pytest.raises(ValueError, match="same forward test set"):
         compare_shadow_summaries(
             {"t30": legacy, "t10": legacy, "last": legacy},
@@ -152,8 +152,8 @@ def test_challenger_comparison_rejects_different_race_ids_at_same_size():
     original = [_record(d, r) for d in range(1, 6) for r in range(25)]
     changed = [_record(d, r) for d in range(1, 6) for r in range(25)]
     changed[-1] = {**changed[-1], "race_id": "different-race-at-same-date"}
-    legacy = walk_forward_blend(original, min_history=50)
-    challenger = walk_forward_blend(changed, min_history=50, brier_weight=0.25)
+    legacy = walk_forward_blend(original, min_history=50, include_private=True)
+    challenger = walk_forward_blend(changed, min_history=50, brier_weight=0.25, include_private=True)
     assert legacy["forward_test_races"] == challenger["forward_test_races"]
     assert legacy["forward_test_days"] == challenger["forward_test_days"]
     with pytest.raises(ValueError, match="same forward test set"):
@@ -165,7 +165,7 @@ def test_challenger_comparison_rejects_different_race_ids_at_same_size():
 
 def test_private_comparison_token_is_not_plain_race_id():
     rows = [_record(d, r) for d in range(1, 4) for r in range(25)]
-    result = walk_forward_blend(rows, min_history=50)
+    result = walk_forward_blend(rows, min_history=50, include_private=True)
     token = result["_comparison_token"]
     assert len(token) == 64
     assert all(r["race_id"] not in token for r in rows)
@@ -173,8 +173,8 @@ def test_private_comparison_token_is_not_plain_race_id():
 
 def test_challenger_difference_has_paired_cluster_ci_for_sufficient_days():
     rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
-    old = walk_forward_blend(rows, min_history=50)
-    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25)
+    old = walk_forward_blend(rows, min_history=50, include_private=True)
+    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25, include_private=True)
     comparison = compare_shadow_summaries(
         {tp: old for tp in ("t30", "t10", "last")},
         {tp: new for tp in ("t30", "t10", "last")},
@@ -188,8 +188,8 @@ def test_challenger_difference_has_paired_cluster_ci_for_sufficient_days():
 
 def test_challenger_difference_rejects_missing_private_paired_rows():
     rows = [_record(d, r) for d in range(1, 5) for r in range(25)]
-    old = walk_forward_blend(rows, min_history=50)
-    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25)
+    old = walk_forward_blend(rows, min_history=50, include_private=True)
+    new = walk_forward_blend(rows, min_history=50, brier_weight=0.25, include_private=True)
     new.pop("_candidate_scored_rows")
     with pytest.raises(ValueError, match="same forward test set"):
         compare_shadow_summaries(
@@ -292,3 +292,14 @@ def test_roi_cluster_gate_rejects_consistently_worse_return():
     assert out["candidate_minus_deployed_roi_ci95"] == pytest.approx([-2.5, -2.5])
     assert out["promotion_gate"]["checks"]["roi_cluster_ci_not_worse"] is False
     assert out["promotion_gate"]["eligible_for_review"] is False
+
+
+def test_walk_forward_default_output_never_exposes_private_races():
+    import json
+    rows = [_record(d, r) for d in range(1, 4) for r in range(25)]
+    output = walk_forward_blend(rows, min_history=50)
+    serialized = json.dumps(output)
+    assert "_comparison_token" not in output
+    assert "_candidate_scored_rows" not in output
+    assert all(row["race_id"] not in serialized for row in rows)
+    assert "race_id" not in serialized
