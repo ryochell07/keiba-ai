@@ -104,20 +104,36 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
             status = "complete" if complete else ("partial" if times else "none")
             # オッズは全頭同じ取得時刻で、発走前かつ予測時点から60分以内の
             # 実際に利用可能なものだけ市場合成に使う。
-            market_ready = bool(complete and len(times) == 1
-                                and all(quote_is_fresh(q, now_dt, post) for q in win_rec))
-            # 最新の個別オッズが一部更新だった場合、最も新しい同時刻の完全記録を探す。
-            # 表示用には最新の個別価格を残すが、市場確率はこの一貫した記録から作る。
+            # 最新取得で「発売なし/停止」を明示する0や異常値があれば、
+            # 以前の売れたオッズを復活させない。
+            explicitly_unavailable = any(
+                q is not None and (q["odds"] is None
+                                  or not np.isfinite(q["odds"]) or q["odds"] <= 0)
+                for q in win_rec
+            )
+            # 馬ごとの数値が揃うだけでなく、同時刻の実スナップショットの
+            # 正のオッズ馬番集合が出走馬集合と一致するか確認する。
+            full_snapshot = (latest_complete_win_odds(con, rid, um, now_dt, post)
+                             if not explicitly_unavailable else None)
+            current_same_snapshot = bool(
+                complete and len(times) == 1
+                and all(quote_is_fresh(q, now_dt, post) for q in win_rec)
+                and full_snapshot is not None
+                and all(full_snapshot[str(u)]["captured_at"] == q["captured_at"]
+                        and full_snapshot[str(u)]["odds"] == q["odds"]
+                        for u, q in zip(um, win_rec))
+            )
+            market_ready = current_same_snapshot
+            # 新しい部分取得がある場合、正のオッズを全頭について含む
+            # 最も新しい同時刻記録だけを採用。最新の個別値は画面表示に残す。
             latest_quote_sig = [[q["odds"] if q else None, q["captured_at"] if q else None]
                                 for q in win_rec]
-            if not market_ready:
-                recovered = latest_complete_win_odds(con, rid, um, now_dt, post)
-                if recovered is not None:
-                    win_rec = [recovered[str(u)] for u in um]
-                    win_odds = [q["odds"] for q in win_rec]
-                    times = {q["captured_at"] for q in win_rec}
-                    complete, status, market_ready = True, "complete", True
-                    stats["market_recovered_snapshot_races"] += 1
+            if not market_ready and full_snapshot is not None:
+                win_rec = [full_snapshot[str(u)] for u in um]
+                win_odds = [q["odds"] for q in win_rec]
+                times = {q["captured_at"] for q in win_rec}
+                complete, status, market_ready = True, "complete", True
+                stats["market_recovered_snapshot_races"] += 1
             if market_ready:
                 stats["market_ready_races"] += 1
             elif complete and len(times) != 1:
