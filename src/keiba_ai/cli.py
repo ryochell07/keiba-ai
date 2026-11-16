@@ -61,12 +61,12 @@ def _nar(con, sources):
     return NarCsvProvider(conf, PoliteClient("nar_csv", conf, con, max_requests=sources["limits"]["max_requests_per_run"]))
 
 
-def _readonly_reconcile(args) -> int:
-    """DB・バックアップ・公開レポートを一切更新せず、保存済み予測を集計する。"""
+def _readonly_reconcile_database(args, path, *, immutable: bool = False) -> int:
+    """DBのスキーマ・本体・評価ファイルには書かず、集計結果だけを表示する。"""
     import sqlite3
     from .forward import reconcile
 
-    uri = config.DB_PATH.resolve().as_uri() + "?mode=ro"
+    uri = path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
     with sqlite3.connect(uri, uri=True, timeout=60) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only = ON")
@@ -75,11 +75,54 @@ def _readonly_reconcile(args) -> int:
         ]
         for org in orgs:
             report = reconcile(con, org, persist=False, write_report=False)
-            # 馬別予測やオッズの生データは出さない。公開CIでは出力リダイレクトも推奨。
-            fields = ("org", "n_races", "excluded_runs_without_verified_prestart_time",
+            # 公開Actionsログには出力しないこと。個別馬/個別レースの記録は表示しない。
+            fields = ("org", "n_races", "n_races_with_selected_prestart_run",
+                      "excluded_runs_without_verified_prestart_time",
                       "evaluation_coverage", "paired_model_comparison", "by_time_point")
             print(json.dumps({k: report[k] for k in fields}, ensure_ascii=False, indent=1))
     return 0
+
+
+def _readonly_reconcile(args) -> int:
+    """既存DBまたは隔離復号した状態アーカイブを一切永続的に変更せず評価する。"""
+    if not args.encrypted_state:
+        return _readonly_reconcile_database(args, config.DB_PATH)
+
+    from contextlib import contextmanager
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import io
+    import shutil
+    import tarfile
+
+    from .state import MAGIC, _key
+
+    path = Path(args.encrypted_state).expanduser()
+    raw = path.read_bytes()
+    if not raw.startswith(MAGIC) or len(raw) <= len(MAGIC) + 12 + 16:
+        raise ValueError("状態ファイルの形式が不正です")
+    nonce = raw[len(MAGIC):len(MAGIC) + 12]
+    try:
+        plaintext = AESGCM(_key()).decrypt(nonce, raw[len(MAGIC) + 12:], MAGIC)
+    except InvalidTag as exc:
+        raise ValueError("状態ファイルの復号に失敗しました。鍵またはファイルを確認してください") from exc
+    # 本番の config.DB_PATH / state.unpack / config.ensure_dirs は一切呼ばない。
+    # 復元先は他ユーザーから閲覧できない一時フォルダ。終了時に完全削除する。
+    with TemporaryDirectory(prefix="keiba-readonly-eval-") as tmp:
+        target = Path(tmp) / "keiba.db"
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:gz") as archive:
+            member = archive.getmember("keiba.db")
+            if not member.isfile() or member.size <= 0 or member.size > 8 * 1024**3:
+                raise ValueError("状態内のDBサイズが不正です")
+            source = archive.extractfile(member)
+            if source is None:
+                raise ValueError("状態内にDBがありません")
+            with source, target.open("xb") as dest:
+                shutil.copyfileobj(source, dest)
+        target.chmod(0o600)
+        return _readonly_reconcile_database(args, target, immutable=True)
 
 
 def main(argv=None) -> int:
@@ -112,6 +155,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sys.excepthook, warnings.showwarning = _public_excepthook, _public_warning
+    if args.cmd == "reconcile" and args.encrypted_state and not args.read_only:
+        ap.error("--encrypted-state は --read-only と併用してください")
     if args.cmd == "reconcile" and args.read_only:
         return _readonly_reconcile(args)
     config.ensure_dirs()
