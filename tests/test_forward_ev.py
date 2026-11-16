@@ -205,3 +205,44 @@ def test_forward_rejects_invalid_probability_vectors():
     assert _score([{**base[0], "p_win_ai": 0.5}, base[1]],
                   "p_win_ai", {1: 1, 2: 2}, {}) is None
     assert _score([], "p_win_ai", {1: 1}, {}) is None
+
+
+def test_paired_intervals_resample_race_dates_and_are_deterministic():
+    """同日複数レースを独立標本として過大評価しない。"""
+    import pytest
+    from keiba_ai.forward import _paired_comparison
+
+    rows = {"ai": [], "market": [], "blend": []}
+    for day in range(1, 13):
+        for race_no in range(1, 4):
+            metadata = {"race_date": f"2030-05-{day:02d}",
+                        "race_id": f"2030-05-{day:02d}-R{race_no}"}
+            rows["market"].append({**metadata, "ll": 0.8, "brier": 0.5, "hit": 0})
+            rows["ai"].append({**metadata, "ll": 0.7, "brier": 0.4, "hit": 1})
+            rows["blend"].append({**metadata, "ll": 0.6, "brier": 0.3, "hit": 1})
+    result = _paired_comparison(rows)
+    assert result["n_races"] == 36
+    assert result["n_race_dates"] == 12
+    ci = result["blend_minus_market"]["ci95"]
+    assert ci is not None
+    assert ci["log_loss"] == pytest.approx([-0.2, -0.2])
+    assert ci["brier"] == pytest.approx([-0.2, -0.2])
+    assert _paired_comparison(rows)["blend_minus_market"]["ci95"] == ci
+    # 100レース未満なら区間が存在しても採用判断しない
+    assert result["sufficient_sample_for_screening"] is False
+
+
+def test_paired_comparison_rejects_different_race_ids_and_too_few_dates():
+    import pytest
+    from keiba_ai.forward import _paired_comparison
+
+    rows = {
+        key: [{"ll": 0.8, "brier": 0.5, "hit": 1,
+               "race_id": "r1", "race_date": "2030-05-01"}]
+        for key in ("ai", "market", "blend")
+    }
+    assert _paired_comparison(rows)["ai_minus_market"]["ci95"] is None
+    assert _paired_comparison(rows)["n_race_dates"] == 1
+    rows["blend"][0]["race_id"] = "r2"
+    with pytest.raises(ValueError, match="matching race IDs"):
+        _paired_comparison(rows)
