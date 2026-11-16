@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from . import config
+from .db import JST
 from .gbm import RaceModel, softmax_by_race
 
 # 同じ時点区分の中でオッズだけが変わった場合に、次の記録まで空ける分数。容量を抑えるため
@@ -24,7 +25,10 @@ def time_point(now: datetime, post: datetime | None, race_date: str) -> tuple[st
     if post is None:
         return "unknown", None
     mins = (post - now).total_seconds() / 60
-    if now.date().isoformat() < race_date:
+    # UTCなど別のオフセットから呼ばれても、開催日の判定は日本時間で統一。
+    # naive datetime は既存互換のためJSTとして扱う。
+    local_day = now.astimezone(JST).date() if now.tzinfo is not None else now.date()
+    if local_day.isoformat() < race_date:
         return "day_before", mins
     if mins > 45:
         return "morning", mins
@@ -54,7 +58,13 @@ def input_hash(model_id: str, bundle_id: str, feature_hash: str, odds: list) -> 
 def should_record(con: sqlite3.Connection, race_id: str, tp: str, model_id: str, ihash: str, feature_hash: str, predicted_at: str, now: datetime) -> bool:
     """入力が同じなら確率も同じなので記録しない。オッズだけの変化は時点ごとの間隔を空ける。
     前日は当日の結果が入るたびに特徴量が変わるので、特徴量の変化でも間隔を空ける。"""
-    last = con.execute("SELECT * FROM prediction_run WHERE race_id=? AND predicted_at<=? ORDER BY predicted_at DESC, rowid DESC LIMIT 1", (race_id, predicted_at)).fetchone()
+    # 文字列の比較だと異なるUTCオフセットで最新予測や未来予測を取り違える。
+    last = con.execute(
+        """SELECT * FROM prediction_run
+           WHERE race_id=? AND julianday(predicted_at)<=julianday(?)
+           ORDER BY julianday(predicted_at) DESC, rowid DESC LIMIT 1""",
+        (race_id, predicted_at),
+    ).fetchone()
     if last is None or last["time_point"] != tp or last["model_version_id"] != model_id:
         return True
     if last["input_hash"] == ihash:

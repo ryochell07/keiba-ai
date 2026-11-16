@@ -12,7 +12,7 @@ import pandas as pd
 from . import config, ledger
 from .bundles import active_bundle, columns_hash, git_commit
 from .db import JST, now_jst
-from .ev import STATUS_NO_ODDS, expected, latest_odds, make_flags, verified_bet_types
+from .ev import STATUS_NO_ODDS, STATUS_STALE_ODDS, expected, latest_complete_win_odds, latest_odds, make_flags, quote_is_fresh, verified_bet_types
 from .failures import ModelIntegrityError, is_fatal, record_failure
 from .features import add_market, build_features, load_frame, serving_frame
 from .gbm import RaceModel
@@ -61,9 +61,13 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
     frame = serving_frame(load_frame(con, org), today)
     if frame.empty:
         return {"org": org, "races": 0}
-    feats = build_features(add_market(frame, con))
+    # 予測時点より後に保存された市場オッズが特徴量へ混入するのを防ぐ。
+    feats = build_features(add_market(frame, con, as_of=predicted_at))
     target = (frame["race_date"] >= today) & frame["status"].isna()
-    stats = {"org": org, "races": 0, "model": mid, "recorded": 0, "skipped_started": 0, "skipped_unchanged": 0, "failed": 0}
+    stats = {"org": org, "races": 0, "model": mid, "recorded": 0,
+             "market_ready_races": 0, "market_recovered_snapshot_races": 0,
+             "market_stale_races": 0, "market_mixed_timestamp_races": 0,
+             "skipped_started": 0, "skipped_unchanged": 0, "failed": 0}
     if not target.any():
         return stats
     bundle = active_bundle(con, org, mid)
@@ -97,10 +101,50 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
             win_odds = [r["odds"] if r and r["odds"] else None for r in win_rec]   # 0 は発売前か票なし。値として使わない
             place_rec = [odds.get(("place", str(u))) for u in um]
             times = {r["captured_at"] for r in win_rec if r and r["odds"]}
-            complete = all(win_odds)
+            complete = all(o is not None and np.isfinite(o) and o > 0 for o in win_odds)
             status = "complete" if complete else ("partial" if times else "none")
+            # オッズは全頭同じ取得時刻で、発走前かつ予測時点から60分以内の
+            # 実際に利用可能なものだけ市場合成に使う。
+            # 最新取得で「発売なし/停止」を明示する0や異常値があれば、
+            # 以前の売れたオッズを復活させない。
+            explicitly_unavailable = any(
+                q is not None and (q["odds"] is None
+                                  or not np.isfinite(q["odds"]) or q["odds"] <= 0)
+                for q in win_rec
+            )
+            # 馬ごとの数値が揃うだけでなく、同時刻の実スナップショットの
+            # 正のオッズ馬番集合が出走馬集合と一致するか確認する。
+            full_snapshot = (latest_complete_win_odds(con, rid, um, now_dt, post)
+                             if not explicitly_unavailable else None)
+            current_same_snapshot = bool(
+                complete and len(times) == 1
+                and all(quote_is_fresh(q, now_dt, post) for q in win_rec)
+                and full_snapshot is not None
+                and all(full_snapshot[str(u)]["captured_at"] == q["captured_at"]
+                        and full_snapshot[str(u)]["odds"] == q["odds"]
+                        for u, q in zip(um, win_rec))
+            )
+            market_ready = current_same_snapshot
+            # 新しい部分取得がある場合、正のオッズを全頭について含む
+            # 最も新しい同時刻記録だけを採用。最新の個別値は画面表示に残す。
+            latest_quote_sig = [[q["odds"] if q else None, q["captured_at"] if q else None]
+                                for q in win_rec]
+            if not market_ready and full_snapshot is not None:
+                win_rec = [full_snapshot[str(u)] for u in um]
+                win_odds = [q["odds"] for q in win_rec]
+                times = {q["captured_at"] for q in win_rec}
+                complete, status, market_ready = True, "complete", True
+                stats["market_recovered_snapshot_races"] += 1
+            if market_ready:
+                stats["market_ready_races"] += 1
+            elif complete and len(times) != 1:
+                stats["market_mixed_timestamp_races"] += 1
+            elif complete:
+                stats["market_stale_races"] += 1
             fh, payload = ledger.encode_inputs(X_all.iloc[pos], um)
-            odds_sig = [[r["odds"] if r else None, r["captured_at"] if r else None] for r in win_rec]
+            odds_sig = {"quotes": [[r["odds"] if r else None, r["captured_at"] if r else None]
+                                   for r in win_rec], "latest_quotes": latest_quote_sig,
+                        "market_ready": market_ready}
             ih = ledger.input_hash(mid, bundle["bundle_id"], fh, odds_sig)
             if not ledger.should_record(con, rid, tp, mid, ih, fh, predicted_at, now_dt):
                 stats["skipped_unchanged"] += 1
@@ -110,17 +154,17 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
             top3_ai = p3_ai.sum(axis=(1, 2)) + p3_ai.sum(axis=(0, 2)) + p3_ai.sum(axis=(0, 1))
             p_market, p1_bl, top3_bl = None, None, None
             taus_blend = (1.0, t2 / t1, t3 / t1)
-            if complete:
+            if market_ready:
                 inv = 1 / np.asarray(win_odds, dtype=float)
                 p_market = inv / inv.sum()
                 b_s = blend_strength(mean_s, win_odds, alpha, beta, t1)
                 p1_bl, _, p3_bl = joint_top3(b_s, taus_blend)
                 top3_bl = p3_bl.sum(axis=(1, 2)) + p3_bl.sum(axis=(0, 2)) + p3_bl.sum(axis=(0, 1))
-            if complete and enforce:
+            if market_ready and enforce:
                 # 市場単独 (AI の係数 0)。AI の寄与を確認できない合成は使わない。AI と合成の確率は比較用に台帳へ残す
                 taus, used = taus_blend, "market"
                 strength = lambda s: blend_strength(s, win_odds, 0.0, 1.0, t1)
-            elif complete:
+            elif market_ready:
                 taus, used = taus_blend, "blend"
                 strength = lambda s: blend_strength(s, win_odds, alpha, beta, t1)
             else:
@@ -132,7 +176,7 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
             run = {"race_id": rid, "org": org, "predicted_at": predicted_at, "scheduled_post_at": post.isoformat() if post else None, "time_point": tp, "minutes_to_post": mins,
                    "model_version_id": mid, "bundle_id": bundle["bundle_id"], "git_commit": commit, "input_hash": ih,
                    "odds_captured_at": max(times) if times else None, "odds_status": status, "odds_same_time": int(complete and len(times) == 1), "used_model": used,
-                   "blend_alpha": alpha if complete else None, "blend_beta": beta if complete else None, "taus": json.dumps(model.taus), "taus_used": json.dumps(taus)}
+                   "blend_alpha": alpha if market_ready else None, "blend_beta": beta if market_ready else None, "taus": json.dumps(model.taus), "taus_used": json.dumps(taus)}
             horses = []
             for i, u in enumerate(um):
                 horses.append({"umaban": int(u), "horse_id": g["horse_id"].iloc[i], "waku": wk[i], "p_win_ai": float(p1_ai[i]), "p_top3_ai": float(top3_ai[i]),
@@ -151,12 +195,14 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
                 for combo, prob in full.items():
                     std = float(np.std([pm[bet_type].get(combo, 0.0) for pm in per_member])) if len(per_member) > 1 else None
                     o = odds.get((bet_type, combo))
-                    ev, ev_max = expected(prob, o["odds"] if o else None, o["odds_max"] if o else None)
-                    flags, conf = make_flags(prob, std, avg_runs, o, ev, verified.get(bet_type), now_dt, past_roi.get(bet_type))
+                    eligible_quote = quote_is_fresh(o, now_dt, post)
+                    ev, ev_max = expected(prob, o["odds"], o["odds_max"]) if eligible_quote else (None, None)
+                    flags, conf = make_flags(prob, std, avg_runs, o if eligible_quote else None,
+                                             ev, verified.get(bet_type), now_dt, past_roi.get(bet_type))
                     con.execute("""INSERT INTO prediction_display(race_id,bet_type,combo,model_version_id,prediction_id,predicted_at,prob,prob_std,
                                    odds,odds_max,odds_captured_at,ev,ev_max,status,flags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (rid, bet_type, combo, mid, pid, predicted_at, prob, std, o["odds"] if o else None, o["odds_max"] if o else None,
-                                 o["captured_at"] if o else None, ev, ev_max, "OK" if o else STATUS_NO_ODDS,
+                                 o["captured_at"] if o else None, ev, ev_max, "OK" if eligible_quote else (STATUS_STALE_ODDS if o else STATUS_NO_ODDS),
                                  json.dumps({"flags": flags, "confidence": conf, "avg_runs": round(avg_runs, 1), "blended": used == "blend",
                                              **({"raw_p": round(raw_win[combo], 5)} if bet_type == "win" else {})}, ensure_ascii=False)))
             con.commit()   # 1レースごとに確定する。失敗したレースだけを取り消すため

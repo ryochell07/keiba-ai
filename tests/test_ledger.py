@@ -362,3 +362,152 @@ def test_凍結中は自動で再学習しない(world, monkeypatch):
     args = argparse.Namespace(no_fetch=True, retrain=True, org="JRA", days=1, odds=False)
     assert cmd_daily(args, con, {"sources": {"nar_csv": {}}}) == 0
     assert con.execute("SELECT COUNT(*) FROM model_version").fetchone()[0] == n
+
+
+def test_stale_complete_win_odds_fall_back_to_ai_and_hide_stale_ev(world, monkeypatch):
+    from keiba_ai.ev import STATUS_STALE_ODDS
+
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(93), "09", 12)
+    race.race_date, race.post_time = "2030-03-25", "16:00"
+    save_race(con, race, observed_at="2030-03-25T08:00:00+09:00")
+    save_odds(con, race.race_id, [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-25T09:00:00+09:00", False, "t")
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-25T10:05:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_stale_races"] == 1
+    stale = con.execute("SELECT * FROM prediction_run WHERE race_id=? ORDER BY predicted_at DESC",
+                        (race.race_id,)).fetchone()
+    assert (stale["odds_status"], stale["odds_same_time"], stale["used_model"]) == ("complete", 1, "ai")
+    hs = con.execute("SELECT p_win_ai,p_win_market,p_win_used FROM prediction_horse WHERE prediction_id=?",
+                     (stale["prediction_id"],)).fetchall()
+    assert all(h["p_win_market"] is None and h["p_win_used"] == pytest.approx(h["p_win_ai"]) for h in hs)
+    disp = con.execute("SELECT ev,status FROM prediction_display WHERE race_id=? AND bet_type='win'",
+                       (race.race_id,)).fetchall()
+    assert len(disp) == 8 and all(d["ev"] is None and d["status"] == STATUS_STALE_ODDS for d in disp)
+
+    # 新しい全頭同時刻のオッズを取り直せば市場単独に戻る。
+    save_odds(con, race.race_id, [OddsRec("win", str(u), 2.5 + u) for u in range(1, 9)],
+              "2030-03-25T15:28:00+09:00", False, "t")
+    fresh_stats = predict_races(con, "JRA", race.race_date, at="2030-03-25T15:30:00+09:00")
+    assert fresh_stats["recorded"] == 1
+    assert fresh_stats["market_ready_races"] == 1
+    fresh = con.execute("SELECT * FROM prediction_run WHERE race_id=? ORDER BY predicted_at DESC",
+                        (race.race_id,)).fetchone()
+    assert fresh["used_model"] == "market"
+    assert fresh["blend_alpha"] is not None
+    visible = con.execute("SELECT ev,status FROM prediction_display WHERE race_id=? AND bet_type='win'",
+                          (race.race_id,)).fetchall()
+    assert len(visible) == 8 and all(d["ev"] is not None and d["status"] == "OK" for d in visible)
+
+
+def test_different_win_odds_timestamps_do_not_mix_market_predictions(world, monkeypatch):
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(94), "10", 12)
+    race.race_date, race.post_time = "2030-03-26", "16:00"
+    save_race(con, race, observed_at="2030-03-26T08:00:00+09:00")
+    save_odds(con, race.race_id, [OddsRec("win", str(u), 2.0 + u) for u in range(1, 8)],
+              "2030-03-26T15:28:00+09:00", False, "t")
+    save_odds(con, race.race_id, [OddsRec("win", "8", 10.0)],
+              "2030-03-26T15:29:00+09:00", False, "t")
+    mixed_stats = predict_races(con, "JRA", race.race_date, at="2030-03-26T15:30:00+09:00")
+    assert mixed_stats["recorded"] == 1
+    assert mixed_stats["market_mixed_timestamp_races"] == 1
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert run["odds_status"] == "complete"  # 値は各馬にあるが、同一取得時刻ではない
+    assert run["odds_same_time"] == 0
+    assert run["used_model"] == "ai"
+    assert run["blend_alpha"] is None
+    assert all(h[0] is None for h in con.execute(
+        "SELECT p_win_market FROM prediction_horse WHERE prediction_id=?", (run["prediction_id"],)))
+
+
+def test_market_readiness_transition_is_recorded_even_when_odds_unchanged(world, monkeypatch):
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(95), "09", 11)
+    race.race_date, race.post_time = "2030-03-28", "16:00"
+    save_race(con, race, observed_at="2030-03-28T08:00:00+09:00")
+    save_odds(con, race.race_id, [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-28T09:00:00+09:00", False, "t")
+    assert predict_races(con, "JRA", race.race_date, at="2030-03-28T09:05:00+09:00")["recorded"] == 1
+    assert predict_races(con, "JRA", race.race_date, at="2030-03-28T10:05:00+09:00")["recorded"] == 1
+    history = con.execute(
+        "SELECT used_model FROM prediction_run WHERE race_id=? ORDER BY predicted_at",
+        (race.race_id,),
+    ).fetchall()
+    assert [r["used_model"] for r in history] == ["market", "ai"]
+
+
+def test_partial_new_win_quote_recovers_last_complete_snapshot(world, monkeypatch):
+    """部分更新は取り込みつつ、確率は直近の全頭同時刻スナップショットから作る。"""
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(96), "10", 12)
+    race.race_date, race.post_time = "2030-03-29", "16:00"
+    save_race(con, race, observed_at="2030-03-29T08:00:00+09:00")
+    save_odds(con, race.race_id,
+              [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-29T15:25:00+09:00", False, "t")
+    save_odds(con, race.race_id, [OddsRec("win", "1", 9.5)],
+              "2030-03-29T15:29:00+09:00", False, "t")
+
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-29T15:30:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_ready_races"] == 1
+    assert stats["market_recovered_snapshot_races"] == 1
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert (run["used_model"], run["odds_status"], run["odds_same_time"]) == ("market", "complete", 1)
+    assert run["odds_captured_at"] == "2030-03-29T15:25:00+09:00"
+    hs = con.execute("SELECT umaban,win_odds,odds_captured_at FROM prediction_horse "
+                     "WHERE prediction_id=? ORDER BY umaban", (run["prediction_id"],)).fetchall()
+    assert len(hs) == 8
+    assert [h["win_odds"] for h in hs] == pytest.approx([2.0 + u for u in range(1, 9)])
+    assert all(h["odds_captured_at"] == run["odds_captured_at"] for h in hs)
+    # 表示用の最新個別価格は別に維持し、同時刻の市場確率と混同しない
+    display = con.execute("SELECT odds FROM prediction_display "
+                          "WHERE race_id=? AND bet_type='win' AND combo='1'",
+                          (race.race_id,)).fetchone()
+    assert display["odds"] == pytest.approx(9.5)
+
+
+def test_zero_latest_odds_does_not_restore_previous_market_forecast(world, monkeypatch):
+    """0の最新オッズは発売なし/停止の可能性があるため古い正価格に戻さない。"""
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(97), "10", 12)
+    race.race_date, race.post_time = "2030-03-30", "16:00"
+    save_race(con, race, observed_at="2030-03-30T08:00:00+09:00")
+    save_odds(con, race.race_id,
+              [OddsRec("win", str(u), 2.0 + u) for u in range(1, 9)],
+              "2030-03-30T15:25:00+09:00", False, "t")
+    save_odds(con, race.race_id, [OddsRec("win", "1", 0.0)],
+              "2030-03-30T15:29:00+09:00", False, "t")
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-30T15:30:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_ready_races"] == 0
+    assert stats["market_recovered_snapshot_races"] == 0
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert run["used_model"] == "ai"
+    assert run["odds_status"] == "partial"
+
+
+def test_extra_positive_cancelled_horse_blocks_market_probability(world, monkeypatch):
+    """全出走馬以外の正の単勝オッズがある取得回を市場分母に使わない。"""
+    con, _ = world
+    monkeypatch.setattr(config, "guards", lambda: {"market_only_orgs": ["JRA"]})
+    race, _ = _future(np.random.default_rng(98), "09", 11)
+    race.race_date, race.post_time = "2030-03-31", "16:00"
+    save_race(con, race, observed_at="2030-03-31T08:00:00+09:00")
+    save_odds(con, race.race_id,
+              [OddsRec("win", str(u), 2.0 + u) for u in range(1, 10)],
+              "2030-03-31T15:25:00+09:00", False, "t")
+    stats = predict_races(con, "JRA", race.race_date, at="2030-03-31T15:30:00+09:00")
+    assert stats["recorded"] == 1
+    assert stats["market_ready_races"] == 0
+    assert stats["market_recovered_snapshot_races"] == 0
+    run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
+    assert run["used_model"] == "ai"
+    assert run["odds_status"] == "complete"  # 各出走馬の数値があることだけを示す

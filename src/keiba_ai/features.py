@@ -116,29 +116,53 @@ def asof_stats(df: pd.DataFrame, keys: list[str], values: list[str], prefix: str
     return out
 
 
-def add_market(df: pd.DataFrame, con: sqlite3.Connection, cutoff_min: int = 10) -> pd.DataFrame:
-    """判定時刻より前に取得した単勝オッズだけを結合する。確定オッズ ('final') は決して使わない。"""
+def add_market(df: pd.DataFrame, con: sqlite3.Connection, cutoff_min: int = 10,
+               as_of: str | None = None) -> pd.DataFrame:
+    """発走 cutoff 分前までの単勝オッズを結合する。
+
+    as_of 指定時は、その予測実行時刻までに取得済みのオッズだけに制限する。
+    学習とバックテストは従来どおり各レースの cutoff を使う。日時は実時刻で比較する。
+    """
     out = df.copy()
     for c in MARKET:
         out[c] = np.nan
     if df.empty:
         return out
-    q = pd.read_sql_query(
-        """SELECT o.race_id, CAST(o.combo AS INTEGER) AS umaban, o.captured_at, o.odds, o.popularity
-           FROM odds_snapshot o JOIN race r USING (race_id)
-           WHERE o.bet_type='win' AND o.is_final=0 AND o.captured_at<>'final' AND r.org=?""",
-        con, params=[df["org"].iloc[0]])
+    sql = """SELECT o.race_id, CAST(o.combo AS INTEGER) AS umaban,
+                    o.captured_at, o.odds, o.popularity
+             FROM odds_snapshot o JOIN race r USING (race_id)
+             WHERE o.bet_type='win' AND o.is_final=0 AND o.captured_at<>'final'
+               AND r.org=?"""
+    params: list = [df["org"].iloc[0]]
+    if as_of is not None:
+        from datetime import datetime
+        when = datetime.fromisoformat(as_of)
+        if when.tzinfo is None or when.utcoffset() is None:
+            raise ValueError("as_of must include timezone information")
+        sql += " AND julianday(o.captured_at)<=julianday(?)"
+        params.append(when.isoformat())
+    q = pd.read_sql_query(sql, con, params=params)
     if q.empty:
         return out
     post = df[["race_id", "race_date", "post_time"]].drop_duplicates("race_id")
     q = q.merge(post, on="race_id")
-    limit = pd.to_datetime(q["race_date"] + " " + q["post_time"].fillna("00:00")) - pd.Timedelta(minutes=cutoff_min)
-    q["ts"] = pd.to_datetime(q["captured_at"]).dt.tz_localize(None)
-    q = q[q["ts"] <= limit].sort_values("ts")
+    # スキーマはISO8601のJSTを前提とする。時差なしの履歴は安全側に除外し、
+    # UTCオフセット混在でも「文字列順」で未来のオッズを使わないようにする。
+    valid_zone = q["captured_at"].astype(str).str.contains(
+        r"(?:Z|[+-]\d{2}:\d{2})$", regex=True, na=False)
+    q = q.loc[valid_zone].copy()
     if q.empty:
         return out
-    last = q.groupby(["race_id", "umaban"]).agg(market_win_odds=("odds", "last"), first_odds=("odds", "first"),
-                                                market_pop=("popularity", "last")).reset_index()
+    q["ts"] = pd.to_datetime(q["captured_at"], format="ISO8601", utc=True, errors="coerce")
+    scheduled = pd.to_datetime(q["race_date"] + " " + q["post_time"].fillna(""),
+                               format="mixed", errors="coerce")
+    limit = scheduled.dt.tz_localize("Asia/Tokyo") - pd.Timedelta(minutes=cutoff_min)
+    q = q.loc[q["ts"].notna() & (q["ts"] <= limit)].sort_values("ts")
+    if q.empty:
+        return out
+    last = q.groupby(["race_id", "umaban"]).agg(
+        market_win_odds=("odds", "last"), first_odds=("odds", "first"),
+        market_pop=("popularity", "last")).reset_index()
     merged = out[["race_id", "umaban"]].merge(last, how="left", on=["race_id", "umaban"])
     out["market_win_odds"] = merged["market_win_odds"].to_numpy()
     out["market_log_odds"] = np.log(out["market_win_odds"])

@@ -277,6 +277,13 @@ def register(sub):
     p.set_defaults(func=cmd_rollback)
     p = sub.add_parser("reconcile", help="発走前の予測と確定結果を照合")
     p.add_argument("--org", choices=["JRA", "NAR"])
+    p.add_argument("--read-only", action="store_true", help="DBもレポートも更新せず集計だけ表示")
+    p.add_argument("--encrypted-state", metavar="FILE",
+                   help="read-only専用。暗号化状態を隔離一時領域で復号し、集計後に削除")
+    p.add_argument("--output", metavar="FILE",
+                   help="集計結果の保存先。暗号化評価時は必須。既存ファイル・リポジトリ内への保存は禁止")
+    p.add_argument("--research", action="store_true",
+                   help="read-only専用。過去の開催日だけで比率を最適化する影モデルを追加評価")
     p.set_defaults(func=cmd_reconcile)
     p = sub.add_parser("predict", help="未確定レースを予測")
     p.add_argument("--org", choices=["JRA", "NAR"])
