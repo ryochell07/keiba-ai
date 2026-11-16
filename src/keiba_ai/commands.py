@@ -277,6 +277,7 @@ def register(sub):
     p.set_defaults(func=cmd_rollback)
     p = sub.add_parser("reconcile", help="発走前の予測と確定結果を照合")
     p.add_argument("--org", choices=["JRA", "NAR"])
+    p.add_argument("--read-only", action="store_true", help="DBもレポートも更新せず集計だけ表示")
     p.set_defaults(func=cmd_reconcile)
     p = sub.add_parser("predict", help="未確定レースを予測")
     p.add_argument("--org", choices=["JRA", "NAR"])
