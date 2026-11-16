@@ -461,6 +461,21 @@ def test_forward_payout_verification_handles_losing_top_and_multiple_winners():
     assert _stats([loser_top])["top1_roi"] == 0
     # 同着1着の片方の払戻が欠ける場合、回収額は不明。
     partial_dead_heat = _score(horses, "p_win_ai", {1: 1, 2: 1, 3: 3}, {"1": 220})
-    assert partial_dead_heat["ret"] is None
+    assert partial_dead_heat is None
     complete_dead_heat = _score(horses, "p_win_ai", {1: 1, 2: 1, 3: 3}, {"1": 220, "2": 430})
-    assert complete_dead_heat["ret"] == 220
+    assert complete_dead_heat is None  # 単一正解のLogLossには使わない
+
+
+def test_forward_probability_score_rejects_missing_duplicate_or_unmatched_horses():
+    horses = [
+        {"umaban": 1, "p_win_ai": 0.7, "win_odds": 2.0},
+        {"umaban": 2, "p_win_ai": 0.3, "win_odds": 3.0},
+    ]
+    fin = {1: 1, 2: 2}
+    assert _score(horses, "p_win_ai", fin, {}) is not None
+    # 結果未取得馬を、暗黙に不的中として扱わない
+    assert _score(horses, "p_win_ai", {1: 1}, {}) is None
+    # 予測から欠けた馬を、正規化された2頭分の確率だけで採点しない
+    assert _score(horses, "p_win_ai", {1: 1, 2: 2, 3: 3}, {}) is None
+    duplicate = [horses[0], {**horses[0], "p_win_ai": 0.3}]
+    assert _score(duplicate, "p_win_ai", fin, {}) is None
