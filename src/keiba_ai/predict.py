@@ -63,7 +63,9 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
         return {"org": org, "races": 0}
     feats = build_features(add_market(frame, con))
     target = (frame["race_date"] >= today) & frame["status"].isna()
-    stats = {"org": org, "races": 0, "model": mid, "recorded": 0, "skipped_started": 0, "skipped_unchanged": 0, "failed": 0}
+    stats = {"org": org, "races": 0, "model": mid, "recorded": 0,
+             "market_ready_races": 0, "market_stale_races": 0, "market_mixed_timestamp_races": 0,
+             "skipped_started": 0, "skipped_unchanged": 0, "failed": 0}
     if not target.any():
         return stats
     bundle = active_bundle(con, org, mid)
@@ -103,6 +105,12 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
             # 実際に利用可能なものだけ市場合成に使う。
             market_ready = bool(complete and len(times) == 1
                                 and all(quote_is_fresh(q, now_dt, post) for q in win_rec))
+            if market_ready:
+                stats["market_ready_races"] += 1
+            elif complete and len(times) != 1:
+                stats["market_mixed_timestamp_races"] += 1
+            elif complete:
+                stats["market_stale_races"] += 1
             fh, payload = ledger.encode_inputs(X_all.iloc[pos], um)
             odds_sig = {"quotes": [[r["odds"] if r else None, r["captured_at"] if r else None]
                                    for r in win_rec], "market_ready": market_ready}
