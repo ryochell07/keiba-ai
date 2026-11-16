@@ -2,6 +2,8 @@
 
 この機能は、実際に発走前に保存された予測だけを、後から判明した着順と照合するためのものです。**バックテストや再学習とは別の検証**です。
 
+予測時の馬番集合・実出走馬番集合・結果取得行が一致しないレースは採点しない。**出走取消、同着1着、未取得の着順**を通常の的中/不的中に混ぜず、除外件数を報告する。実データでの変更前後の対象レース数は異なる可能性がある。
+
 ## 安全な実行方法
 
 暗号化バックアップを復元する場合は、アクセス制限された作業環境に**コピーとして**復元してください。公開GitHub Actionsのログに暗号鍵、予測台帳、オッズの生データを出さないでください。
@@ -24,6 +26,10 @@
 - `ev100_roi`: EV条件を満たしていても、勝ち馬の払戻が確認できないレースはベット件数・払戻を集計しない。未取得払戻と不的中は区別する。
 - `evaluation_coverage.by_time_point.*.used_model_counts`: `ai` / `market` / `blend` / その他として、どの予測方式を**採用したか**の件数。採用件数と評価可能件数は区別する
 - `evaluation_coverage.by_time_point.*.deployed_scored`: 採用した確率ベクトルが妥当で、着順と照合できたレース数
+- `evaluation_coverage.by_time_point.*.incomplete_results`: 結果テーブルに全出走登録馬の行がそろっていないレース。結果取得中・一部欠落の可能性があるため精度とROI双方から除外
+- `evaluation_coverage.by_time_point.*.runner_set_mismatch`: 予測台帳に保存した馬番集合と、確定結果の実際の出走馬番集合が異なるレース。後から取消・除外が判明した場合などを含み、評価対象外
+- `evaluation_coverage.by_time_point.*.multiple_or_missing_winners`: 同着1着など勝ち馬が一意でないレース。従来の単一勝者のLogLoss/Brierでは比較不能として除外
+- `n_races_with_selected_prestart_run`: 発走前の予測履歴と勝ち馬の結果が存在したレース数（結果の全頭整合性検証前）。`n_races` は整合性検証後の券種別集計レース数
 - `evaluation_coverage.by_time_point.*.selected_runs`: 各時点で選択された発走前予測
 - `ai_scored`: AIの確率と着順だけで評価可能なもの
 - `fresh_complete_odds`: 全頭・同時刻の単勝オッズが元の非確定取得履歴と一致し、発走前・予測時点60分以内であるもの
