@@ -16,19 +16,21 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    # 鍵と合言葉はジョブ全体に置かず、使うステップだけに渡す (外部アクションから読めないように)
     env:
       GH_TOKEN: ${{ github.token }}
-      KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
-      KEIBA_SITE_PASSPHRASE: ${{ secrets.KEIBA_SITE_PASSPHRASE }}
       ALLOW_PRIVATE_RUN: ${{ vars.ALLOW_PRIVATE_RUN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: ./.github/actions/guard
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/pull-state
+        env:
+          KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
       - name: 日次処理
         env:
           RETRAIN: ${{ inputs.retrain }}
+          KEIBA_SITE_PASSPHRASE: ${{ secrets.KEIBA_SITE_PASSPHRASE }}   # daily の最後にページを作る
         run: |
           ARGS=""
           dow="$(TZ=Asia/Tokyo date +%u)"; dom="$(TZ=Asia/Tokyo date +%-d)"
@@ -36,10 +38,12 @@ jobs:
           .venv/bin/keiba daily $ARGS
       - uses: ./.github/actions/push-state
         if: success() || failure()
-      - uses: actions/upload-pages-artifact@v3
+        env:
+          KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3.0.1
         if: success() || failure()
         with: {path: public}
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
         if: success() || failure()
       - name: スケジュール維持
         # 公開リポジトリは無活動が60日続くと定期実行が止まる。main は PR 必須にしたのでコミットはせず、

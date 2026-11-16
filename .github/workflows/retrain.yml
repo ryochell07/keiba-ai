@@ -44,15 +44,17 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    # 鍵はジョブ全体に置かず、使うステップだけに渡す (外部アクションから読めないように)
     env:
       GH_TOKEN: ${{ github.token }}
-      KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
       ALLOW_PRIVATE_RUN: ${{ vars.ALLOW_PRIVATE_RUN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: ./.github/actions/guard
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/pull-state
+        env:
+          KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
       - name: 実行
         env:
           TASK: ${{ inputs.task }}
@@ -90,3 +92,5 @@ jobs:
           exit "$rc"
       - uses: ./.github/actions/push-state
         if: inputs.save && success()
+        env:
+          KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}

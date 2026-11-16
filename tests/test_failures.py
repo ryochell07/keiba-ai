@@ -370,7 +370,8 @@ def test_再学習は手動でだけ動き保存は明示したときだけ():
     assert on["workflow_dispatch"]["inputs"]["save"]["default"] is False
     assert on["workflow_dispatch"]["inputs"]["force"]["default"] is False
     steps = flow["jobs"]["run"]["steps"]
-    assert [s.get("uses") for s in steps][:4] == ["actions/checkout@v4", "./.github/actions/guard", "./.github/actions/setup", "./.github/actions/pull-state"]
+    uses = [s.get("uses") for s in steps]
+    assert uses[0].startswith("actions/checkout@") and uses[1:4] == ["./.github/actions/guard", "./.github/actions/setup", "./.github/actions/pull-state"]
     assert steps[-1]["uses"] == "./.github/actions/push-state" and steps[-1]["if"] == "inputs.save && success()"
     assert flow["jobs"]["run"]["timeout-minutes"] <= 350   # 1 ジョブ 6 時間の上限に収める
     # 定期実行の再学習は止めたまま。中央だけ市場単独にする
