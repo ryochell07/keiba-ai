@@ -1,0 +1,90 @@
+name: forward-evaluate-readonly
+run-name: "forward evaluation (encrypted only, ${{ inputs.org }})"
+
+# 手動でのみ実行する。pull_request / schedule では秘密鍵に触れない。
+# GitHub Actionsのworkflow_dispatchはデフォルトブランチへの登録後に利用できる。
+on:
+  workflow_dispatch:
+    inputs:
+      org:
+        description: "評価する主催"
+        type: choice
+        options: [BOTH, NAR, JRA]
+        default: BOTH
+        required: true
+
+permissions:
+  contents: read
+
+# 本番の keiba-state 書込みワークフローはロックしない（すべて読み取り専用）。
+concurrency:
+  group: keiba-forward-evaluate-readonly
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    # main のワークフローをリポジトリ所有者が手動起動した場合のみ。
+    # Draft/PRブランチのコードには一切秘密鍵を渡さない。
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout reviewed default branch without stored credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup locked environment (no secrets in this step)
+        uses: ./.github/actions/setup
+
+      - name: Download encrypted state only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/keiba-eval"
+          gh release download state --repo "$GITHUB_REPOSITORY" \
+            --pattern 'keiba-state.enc' --dir "$RUNNER_TEMP/keiba-eval"
+          test -s "$RUNNER_TEMP/keiba-eval/keiba-state.enc"
+
+      - name: Evaluate read-only and encrypt confidential results
+        shell: bash
+        env:
+          KEIBA_STATE_KEY: ${{ secrets.KEIBA_STATE_KEY }}
+          EVAL_ORG: ${{ inputs.org }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          if [ -z "${KEIBA_STATE_KEY:-}" ]; then
+            echo "::error::復号用Secretが未設定です"
+            exit 1
+          fi
+          case "$EVAL_ORG" in BOTH|NAR|JRA) ;; *) exit 2 ;; esac
+          workdir="$RUNNER_TEMP/keiba-eval"
+          trap 'rm -f "$RUNNER_TEMP/keiba-eval/metrics.json" "$RUNNER_TEMP/keiba-eval/keiba-state.enc"' EXIT
+          args=(reconcile --read-only --encrypted-state "$workdir/keiba-state.enc" \
+                --output "$workdir/metrics.json")
+          if [ "$EVAL_ORG" != BOTH ]; then args+=(--org "$EVAL_ORG"); fi
+          .venv/bin/keiba "${args[@]}"
+          .venv/bin/python -m keiba_ai.eval_artifact encrypt \
+            --input "$workdir/metrics.json" \
+            --output "$RUNNER_TEMP/forward-evaluation.enc"
+          echo "読み取り専用の集計と暗号化を完了（成績はログ非表示）"
+
+      - name: Upload encrypted artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: forward-evaluation-encrypted
+          path: ${{ runner.temp }}/forward-evaluation.enc
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Remove temporary encrypted report
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/forward-evaluation.enc"
+          rm -f "$RUNNER_TEMP/keiba-eval/metrics.json" "$RUNNER_TEMP/keiba-eval/keiba-state.enc"
