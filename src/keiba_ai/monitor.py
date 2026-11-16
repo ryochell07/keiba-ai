@@ -19,18 +19,44 @@ def odds_quality(con: sqlite3.Connection, day: str, org: str, now: datetime | No
     races = [r for r in races if r["n"] > 0 and datetime.fromisoformat(f"{day}T{r['post_time']}:00+09:00") <= now]
     for r in races:
         post = datetime.fromisoformat(f"{day}T{r['post_time']}:00+09:00")
-        rows = con.execute("SELECT captured_at, SUM(odds>0) c FROM odds_snapshot WHERE race_id=? AND bet_type='win' AND is_final=0 AND captured_at<? GROUP BY 1 ORDER BY 1",
-                           (r["race_id"], post.isoformat())).fetchall()
-        best = max((x["c"] for x in rows), default=0)
-        usable = [x for x in rows if best and x["c"] == best]   # 全頭にオッズが付いた取得だけを数える
-        snaps += len(usable)
-        if not usable:
+        # 取消・除外を除いた馬番を集合で検証する。単なる件数一致では、
+        # 一部の馬が欠け、取消馬のオッズが残るケースを検出できない。
+        active = {
+            str(row[0]) for row in con.execute(
+                """SELECT e.umaban FROM entry e LEFT JOIN result x
+                   ON x.race_id=e.race_id AND x.umaban=e.umaban
+                   WHERE e.race_id=? AND COALESCE(x.status,'') NOT IN ('scratched','excluded')""",
+                (r["race_id"],),
+            )
+        }
+        snapshots: dict[datetime, set[str]] = {}
+        for row in con.execute(
+            """SELECT captured_at, combo, odds FROM odds_snapshot
+               WHERE race_id=? AND bet_type='win' AND is_final=0
+                 AND captured_at<>'final'""",
+            (r["race_id"],),
+        ):
+            try:
+                stamp = datetime.fromisoformat(row["captured_at"])
+                if stamp.tzinfo is None or stamp.utcoffset() is None or stamp >= post:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            positive = snapshots.setdefault(stamp, set())
+            if row["odds"] is not None and np.isfinite(row["odds"]) and row["odds"] > 0:
+                positive.add(str(row["combo"]))
+        if not active:
             missing.append(1.0)
             continue
+        times = sorted(stamp for stamp, positive in snapshots.items() if active <= positive)
+        snaps += len(times)
+        latest = max(snapshots) if snapshots else None
+        # 欠損率は最後の発走前スナップショットにおける現役出走馬の欠損割合。
+        missing.append(1 - len(active & snapshots[latest]) / len(active) if latest else 1.0)
+        if not times:
+            continue
         any_ += 1
-        times = [datetime.fromisoformat(x["captured_at"]) for x in usable]
-        missing.append(max(0.0, 1 - rows[-1]["c"] / r["n"]))
-        # その時点で使える最新の値が、許容の古さに収まっているか
+        # その時点で全出走馬のオッズがそろう最新値が、許容の古さに収まっているか
         def fresh(minutes: int, max_age: int) -> tuple[bool, float | None]:
             limit = post - timedelta(minutes=minutes)
             ok = [t for t in times if t <= limit]
