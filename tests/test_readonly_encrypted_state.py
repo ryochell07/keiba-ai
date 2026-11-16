@@ -114,3 +114,35 @@ def test_encrypted_release_refuses_repo_output_and_overwriting(tmp_path, monkeyp
         main(["reconcile", "--read-only", "--org", "NAR", "--encrypted-state",
               str(state), "--output", str(unsafe)])
     assert not unsafe.exists()
+
+
+def test_full_readonly_state_to_encrypted_artifact_to_local_report(
+        tmp_path, monkeypatch, capsys):
+    """復号→読取専用集計→再暗号化→ローカル復号を模擬機密データで通す。"""
+    from keiba_ai.eval_artifact import encrypt_report, decrypt_report
+
+    key = bytes.fromhex("43" * 32)  # 公開してよい架空のテスト鍵
+    state = _make_encrypted_state(tmp_path, key)
+    monkeypatch.setenv("KEIBA_STATE_KEY", key.hex())
+    production = tmp_path / "untouched-production.db"
+    monkeypatch.setattr(config, "DB_PATH", production)
+    report = tmp_path / "private-report.json"
+    encrypted = tmp_path / "encrypted-result.enc"
+    recovered = tmp_path / "recovered-report.json"
+
+    assert main(["reconcile", "--read-only", "--encrypted-state", str(state),
+                 "--org", "NAR", "--output", str(report)]) == 0
+    assert capsys.readouterr().out == ""
+    expected = json.loads(report.read_text(encoding="utf-8"))
+    assert expected["org"] == "NAR"
+    assert expected["n_races"] == 0
+
+    encrypt_report(report, encrypted)
+    assert b'"org"' not in encrypted.read_bytes()
+    assert b'"n_races"' not in encrypted.read_bytes()
+    report.unlink()  # ランナー上の平文は暗号化後削除する
+    decrypt_report(encrypted, recovered)
+    assert json.loads(recovered.read_text(encoding="utf-8")) == expected
+    assert (recovered.stat().st_mode & 0o777) == 0o600
+    assert not production.exists()
+    assert not list(tmp_path.glob("keiba-readonly-eval-*"))
