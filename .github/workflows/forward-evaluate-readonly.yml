@@ -24,8 +24,9 @@ concurrency:
 jobs:
   evaluate:
     # main のワークフローをリポジトリ所有者が手動起動した場合のみ。
-    # Draft/PRブランチのコードには一切秘密鍵を渡さない。
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner }}
+    # Draft/PRブランチや未保護のmainには一切秘密鍵を渡さない。
+    # GitHubのbranch protection/rulesetが未設定なら、このジョブは実行しない。
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.actor == github.repository_owner }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
