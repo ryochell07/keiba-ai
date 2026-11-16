@@ -67,3 +67,27 @@ def test_best_alpha_uses_prior_labels_not_future_dates():
     assert _best_alpha(history) == pytest.approx(1.0)
     opposite = [_record(2, i, ai_winner=0.1, market_winner=0.9) for i in range(10)]
     assert _best_alpha(opposite) == pytest.approx(0.0)
+
+
+def test_promotion_requires_day_cluster_brier_noninferiority():
+    # 18日×25レース。最初の2日を訓練に使い、残り16日を未来評価する。
+    # 十分な独立日数があり、候補がLL/Brierとも全日で優位な場合は
+    # 採用ではなく「レビュー対象」にのみ到達する。
+    rows = [_record(d, r) for d in range(1, 19) for r in range(25)]
+    out = walk_forward_blend(rows, min_history=50, min_history_dates=2)
+    assert out["forward_test_races"] == 400
+    assert out["forward_test_days"] == 16
+    assert out["promotion_gate"]["checks"]["brier_cluster_ci_not_worse"] is True
+    assert out["promotion_gate"]["eligible_for_review"] is True
+    assert out["promotion_gate"]["applied_to_production"] is False
+    assert out["candidate_minus_deployed_ci95"]["brier"][1] < 0
+
+
+def test_promotion_rejects_insufficient_brier_cluster_evidence():
+    rows = [_record(d, r) for d in range(1, 11) for r in range(40)]
+    out = walk_forward_blend(rows, min_history=80, min_history_dates=2)
+    # 件数は足りても、独立した将来開催日が8日しかなくCIは算出しない。
+    assert out["forward_test_races"] == 320
+    assert out["candidate_minus_deployed_ci95"] is None
+    assert out["promotion_gate"]["checks"]["brier_cluster_ci_not_worse"] is False
+    assert out["promotion_gate"]["eligible_for_review"] is False
