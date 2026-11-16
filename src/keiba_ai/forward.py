@@ -158,10 +158,16 @@ def _place_odds_same_time(con: sqlite3.Connection, race_id: str, horses: list[sq
            WHERE race_id=? AND bet_type='place' AND captured_at=? AND is_final=0""",
         (race_id, captured_at),
     ).fetchall()
-    available = {str(r["combo"]): r["odds"] for r in rows if r["odds"] is not None and r["odds"] > 0}
+    available = {str(r["combo"]): r["odds"] for r in rows
+                 if r["odds"] is not None and np.isfinite(r["odds"]) and r["odds"] > 0}
+    # 複勝も単勝と同様、取消馬の余分な正価格や不正な数値が混ざる取得回は不可。
+    if set(available) != {str(h["umaban"]) for h in horses}:
+        return False
     return all(
         str(h["umaban"]) in available
         and h["place_odds"] is not None
+        and np.isfinite(h["place_odds"])
+        and h["place_odds"] > 0
         and abs(available[str(h["umaban"])] - h["place_odds"]) < 1e-9
         for h in horses
     )
