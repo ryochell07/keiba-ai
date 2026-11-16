@@ -19,16 +19,33 @@ POINTS = ("t30", "t10", "last")
 ALPHAS = tuple(round(i * 0.05, 2) for i in range(21))
 
 
-def _best_alpha(history: list[dict], regularization: float = 0.002) -> float:
-    """市場pとAI pの線形混合。過去の勝ち馬の確率のみで重みを推定する。"""
+def _best_alpha(history: list[dict], regularization: float = 0.002,
+                brier_weight: float = 0.0) -> float:
+    """過去の開催日だけでAI・市場の混合比率を推定する。
+
+    brier_weight=0 は従来のLogLoss最適化と完全互換。
+    正の値は研究用の複合損失であり、本番採用を意味しない。
+    """
     if not history:
         return 0.5
+    if not np.isfinite(brier_weight) or brier_weight < 0:
+        raise ValueError("brier_weight must be a finite nonnegative number")
     ai = np.array([x["ai"][x["winner"]] for x in history], dtype=float)
     market = np.array([x["market"][x["winner"]] for x in history], dtype=float)
     values = []
     for alpha in ALPHAS:
         p = np.clip(alpha * ai + (1 - alpha) * market, 1e-12, 1)
-        values.append(float(-np.log(p).mean()) + regularization * (alpha - 0.5) ** 2)
+        loss = float(-np.log(p).mean())
+        if brier_weight:
+            # 同一レースの全馬確率を用いた多クラスBrier。未来レースは含めない。
+            brier = []
+            for rec in history:
+                mixed = {u: alpha * rec["ai"][u] + (1 - alpha) * rec["market"][u]
+                         for u in rec["ai"]}
+                brier.append(sum((v - (u == rec["winner"])) ** 2
+                                 for u, v in mixed.items()))
+            loss += brier_weight * float(np.mean(brier))
+        values.append(loss + regularization * (alpha - 0.5) ** 2)
     return float(ALPHAS[int(np.argmin(values))])
 
 
@@ -50,8 +67,10 @@ def _score_record(record: dict, probabilities: dict[int, float]) -> dict:
 
 
 def walk_forward_blend(records: list[dict], *, min_history: int = 50,
-                       min_history_dates: int = 2) -> dict:
+                       min_history_dates: int = 2, brier_weight: float = 0.0) -> dict:
     """同一開催日の結果を見て同日レースを調整しない、逐次外部検証。"""
+    if not np.isfinite(brier_weight) or brier_weight < 0:
+        raise ValueError("brier_weight must be a finite nonnegative number")
     days: dict[str, list[dict]] = defaultdict(list)
     race_ids = set()
     for record in records:
@@ -70,7 +89,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         batch = days[day]
         # 当日の勝敗を評価してから重みを選択することは絶対にしない。
         if len(history) >= min_history and len({r["race_date"] for r in history}) >= min_history_dates:
-            alpha = _best_alpha(history)
+            alpha = _best_alpha(history, brier_weight=brier_weight)
             evaluation_days += 1
             selected_alphas.extend([alpha] * len(batch))
             for rec in batch:
@@ -127,6 +146,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             "applied_to_production": False,
             "checks": checks,
         },
+        "optimization_brier_weight": brier_weight,
         "valid_races": len(records), "valid_days": len(days),
         "minimum_training_races": min_history, "minimum_training_days": min_history_dates,
         "forward_test_races": n, "forward_test_days": evaluation_days,
@@ -193,5 +213,15 @@ def evaluate_shadow(con: sqlite3.Connection, org: str, *, min_history: int = 50)
         "by_time_point": {
             tp: walk_forward_blend(items[tp], min_history=min_history)
             for tp in POINTS
+        },
+        # 別候補も同じ過去日だけで訓練し、同じ未来レース集合で測定。
+        # 本番・採用済み確率・台帳には影響させない。
+        "brier_regularized_challenger": {
+            "brier_weight": 0.25,
+            "by_time_point": {
+                tp: walk_forward_blend(items[tp], min_history=min_history,
+                                       brier_weight=0.25)
+                for tp in POINTS
+            },
         },
     }
