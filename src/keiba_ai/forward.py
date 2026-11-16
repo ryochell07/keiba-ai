@@ -244,10 +244,11 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         """SELECT p.*, r.race_date FROM prediction_run p
            JOIN race r ON r.race_id=p.race_id
            WHERE p.org=?
-             AND EXISTS (SELECT 1 FROM result x WHERE x.race_id=p.race_id AND x.finish_pos=1)
+             AND EXISTS (SELECT 1 FROM result x WHERE x.race_id=p.race_id)
            ORDER BY p.race_id, p.predicted_at, p.rowid""", (org,)).fetchall()
-    # 発走予定時刻の欠損や文字列のオフセット比較ミスを利用した、
-    # 実際には発走後の予測を「事前予測」と見なす事故を防ぐ。
+    # 結果の行が1件でもあれば評価候補に入れる（1着行を必須にすると、
+    # 1着情報だけ未取得のレースが母数から消え、選択バイアスを隠してしまう）。
+    # 発走予定時刻の欠損や文字列のオフセット比較ミスも安全側に除外する。
     runs = _chronological_prestart_runs(candidates)
     invalid_prestart_runs = len(candidates) - len(runs)
     payouts: dict[tuple[str, str], dict[str, int]] = defaultdict(dict)
