@@ -150,3 +150,5 @@ umask 077
 `shadow_research.brier_regularized_challenger.by_time_point` に、LogLossだけでなく過去開催日の多クラスBrier Scoreも考慮した混合比率の候補を追加した。各開催日より前に確定したレースのみを使用し、目的関数は `mean(LogLoss) + 0.25 * mean(Brier) + 0.002 * (alpha - 0.5)^2`、alphaは0.05刻み。従来の `shadow_research.by_time_point` は従前どおりLogLossのみの研究候補で、互いに同じ将来評価レース集合を使用する。
 
 これは**比較対象を1種類増やす変更**であり、精度改善を確認したものではない。探索候補が増えたため、多重比較による偶然の勝ちを避ける必要がある。どちらの候補も採用モデル・確率台帳・自動購入・本番フローを変更しない。将来開催日・LogLoss・Brier・信頼区間と参考ROIを両候補で比較し、採用可否は別途判断する。
+
+`shadow_research.challenger_minus_legacy` は同じ時点・同じ未来レース母数における新研究候補と従来研究候補の平均LogLoss差、Brier差、参考TOP1 ROI差を出力する。LogLoss差・Brier差は**負なら新候補が優位**。評価母数が異なれば例外で停止する。比較値は記述統計であり、新旧候補の差の95%区間・多重検定補正を実施したものではないため、この差だけで採用資格を認定しない。払い戻しカバー率が不足する場合はROI差は出さない。
