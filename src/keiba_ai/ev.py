@@ -2,17 +2,36 @@
 from __future__ import annotations
 
 import sqlite3
+import math
 from datetime import datetime
 
 from .db import JST
 from .providers.base import BET_LABEL
 
 STATUS_NO_ODDS = "オッズ未取得"
+STATUS_STALE_ODDS = "オッズ古い・評価対象外"
 STALE_MIN = 60
 MIN_VERIFIED_BETS = 500
 # JRA の控除率。損益分岐の目安として表示する。
 TAKEOUT = {"win": 0.20, "place": 0.20, "bracket_quinella": 0.225, "quinella": 0.225, "wide": 0.225,
            "exacta": 0.25, "trio": 0.25, "trifecta": 0.275, "bracket_exacta": 0.25}
+
+
+def quote_is_fresh(quote: dict | None, at: datetime, post: datetime | None, max_age_min: int = STALE_MIN) -> bool:
+    """予測時に使える正の非確定オッズ。価格と時刻を個別に点検する。"""
+    if quote is None or post is None:
+        return False
+    try:
+        captured = datetime.fromisoformat(quote["captured_at"])
+        price = float(quote["odds"])
+        if any(t.tzinfo is None or t.utcoffset() is None for t in (captured, at, post)):
+            return False
+        age_min = (at - captured).total_seconds() / 60
+        return (math.isfinite(price) and price > 0
+                and 0 <= age_min <= max_age_min
+                and captured < post and at < post)
+    except (TypeError, ValueError, OverflowError, KeyError):
+        return False
 
 
 def expected(prob: float, odds: float | None, odds_max: float | None = None) -> tuple[float | None, float | None]:
