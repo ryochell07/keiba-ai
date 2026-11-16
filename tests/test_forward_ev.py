@@ -299,3 +299,24 @@ def test_readonly_report_counts_predictions_missing_prestart_evidence(tmp_path, 
     assert out["excluded_runs_without_verified_prestart_time"] == 2
     assert out["n_races"] == 0
     assert not (tmp_path / "untouched").exists()
+
+
+def test_chronological_prestart_selection_uses_actual_utc_instant():
+    from keiba_ai.forward import _chronological_prestart_runs, _select
+
+    # 01:10 UTC は日本時間10:10、10:00 JST より後。
+    # 辞書順（文字列順）では逆転し得るが、発走前の最後は後者を選ぶべき。
+    candidates = [
+        {"race_id": "r", "prediction_id": "late", "time_point": "last",
+         "predicted_at": "2030-03-02T01:10:00+00:00",
+         "scheduled_post_at": "2030-03-02T10:30:00+09:00"},
+        {"race_id": "r", "prediction_id": "early", "time_point": "last",
+         "predicted_at": "2030-03-02T10:00:00+09:00",
+         "scheduled_post_at": "2030-03-02T10:30:00+09:00"},
+        {"race_id": "r", "prediction_id": "after", "time_point": "last",
+         "predicted_at": "2030-03-02T01:45:00+00:00",
+         "scheduled_post_at": "2030-03-02T10:30:00+09:00"},
+    ]
+    ordered = _chronological_prestart_runs(candidates)
+    assert [r["prediction_id"] for r in ordered] == ["early", "late"]
+    assert _select(ordered)[("r", "last")]["prediction_id"] == "late"
