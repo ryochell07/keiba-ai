@@ -41,3 +41,15 @@ def test_readonly_evaluation_workflow_requires_main_owner_and_manual_dispatch():
     upload = next(step for step in steps if "upload-artifact@v4" in step.get("uses", ""))
     assert upload["with"]["path"] == "${{ runner.temp }}/forward-evaluation.enc"
     assert upload["with"]["retention-days"] == "3"
+    secret_script = secret_steps[0]["run"]
+    # tracebackやstdoutに個別の機密情報が含まれる場合もActionsへ出さない
+    assert '2> "$workdir/evaluation.stderr"' in secret_script
+    assert '> "$workdir/evaluation.stdout"' in secret_script
+    assert '2> "$workdir/encryption.stderr"' in secret_script
+    assert '> "$workdir/encryption.stdout"' in secret_script
+    assert "if [ \"$rc\" -ne 0 ]" in secret_script
+    assert "set +x" in secret_script
+    assert "eval" not in secret_script
+    assert "cat \"$workdir/metrics.json\"" not in joined
+    assert "evaluation.stderr" in steps[-1]["run"]
+    assert "encryption.stderr" in steps[-1]["run"]
