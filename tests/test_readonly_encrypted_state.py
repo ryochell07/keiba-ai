@@ -26,6 +26,7 @@ def _make_encrypted_state(tmp_path: Path, key: bytes) -> Path:
             CREATE TABLE odds_snapshot (race_id TEXT, bet_type TEXT, combo TEXT,
                                         captured_at TEXT, odds REAL, is_final INTEGER);
             INSERT INTO race VALUES ('r','NAR','2030-03-02','10:30');
+            INSERT INTO race VALUES ('r-jra','JRA','2030-03-02','10:30');
         """)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as archive:
@@ -146,3 +147,28 @@ def test_full_readonly_state_to_encrypted_artifact_to_local_report(
     assert (recovered.stat().st_mode & 0o777) == 0o600
     assert not production.exists()
     assert not list(tmp_path.glob("keiba-readonly-eval-*"))
+
+
+def test_encrypted_release_default_both_orgs_is_one_encrypted_array(
+        tmp_path, monkeypatch, capsys):
+    """ワークフローの初期値BOTHで中央・地方の両方を暗号化して受け取れる。"""
+    from keiba_ai.eval_artifact import encrypt_report, decrypt_report
+
+    key = bytes.fromhex("54" * 32)
+    state = _make_encrypted_state(tmp_path, key)
+    monkeypatch.setenv("KEIBA_STATE_KEY", key.hex())
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "production-must-stay-absent.db")
+    report = tmp_path / "both-private.json"
+    encrypted = tmp_path / "both.encrypted"
+    restored = tmp_path / "both-restored.json"
+    assert main(["reconcile", "--read-only", "--encrypted-state", str(state),
+                 "--output", str(report)]) == 0
+    assert capsys.readouterr().out == ""
+    encrypt_report(report, encrypted)
+    report.unlink()
+    assert b'"org"' not in encrypted.read_bytes()
+    decrypt_report(encrypted, restored)
+    rows = json.loads(restored.read_text(encoding="utf-8"))
+    assert [r["org"] for r in rows] == ["JRA", "NAR"]
+    assert all(r["n_races"] == 0 for r in rows)
+    assert not config.DB_PATH.exists()
