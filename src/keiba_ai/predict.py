@@ -12,7 +12,7 @@ import pandas as pd
 from . import config, ledger
 from .bundles import active_bundle, columns_hash, git_commit
 from .db import JST, now_jst
-from .ev import STATUS_NO_ODDS, STATUS_STALE_ODDS, expected, latest_odds, make_flags, quote_is_fresh, verified_bet_types
+from .ev import STATUS_NO_ODDS, STATUS_STALE_ODDS, expected, latest_complete_win_odds, latest_odds, make_flags, quote_is_fresh, verified_bet_types
 from .failures import ModelIntegrityError, is_fatal, record_failure
 from .features import add_market, build_features, load_frame, serving_frame
 from .gbm import RaceModel
@@ -64,7 +64,8 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
     feats = build_features(add_market(frame, con))
     target = (frame["race_date"] >= today) & frame["status"].isna()
     stats = {"org": org, "races": 0, "model": mid, "recorded": 0,
-             "market_ready_races": 0, "market_stale_races": 0, "market_mixed_timestamp_races": 0,
+             "market_ready_races": 0, "market_recovered_snapshot_races": 0,
+             "market_stale_races": 0, "market_mixed_timestamp_races": 0,
              "skipped_started": 0, "skipped_unchanged": 0, "failed": 0}
     if not target.any():
         return stats
@@ -105,6 +106,18 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
             # 実際に利用可能なものだけ市場合成に使う。
             market_ready = bool(complete and len(times) == 1
                                 and all(quote_is_fresh(q, now_dt, post) for q in win_rec))
+            # 最新の個別オッズが一部更新だった場合、最も新しい同時刻の完全記録を探す。
+            # 表示用には最新の個別価格を残すが、市場確率はこの一貫した記録から作る。
+            latest_quote_sig = [[q["odds"] if q else None, q["captured_at"] if q else None]
+                                for q in win_rec]
+            if not market_ready:
+                recovered = latest_complete_win_odds(con, rid, um, now_dt, post)
+                if recovered is not None:
+                    win_rec = [recovered[str(u)] for u in um]
+                    win_odds = [q["odds"] for q in win_rec]
+                    times = {q["captured_at"] for q in win_rec}
+                    complete, status, market_ready = True, "complete", True
+                    stats["market_recovered_snapshot_races"] += 1
             if market_ready:
                 stats["market_ready_races"] += 1
             elif complete and len(times) != 1:
@@ -113,7 +126,8 @@ def predict_races(con: sqlite3.Connection, org: str, from_date: str | None = Non
                 stats["market_stale_races"] += 1
             fh, payload = ledger.encode_inputs(X_all.iloc[pos], um)
             odds_sig = {"quotes": [[r["odds"] if r else None, r["captured_at"] if r else None]
-                                   for r in win_rec], "market_ready": market_ready}
+                                   for r in win_rec], "latest_quotes": latest_quote_sig,
+                        "market_ready": market_ready}
             ih = ledger.input_hash(mid, bundle["bundle_id"], fh, odds_sig)
             if not ledger.should_record(con, rid, tp, mid, ih, fh, predicted_at, now_dt):
                 stats["skipped_unchanged"] += 1
