@@ -127,8 +127,13 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
                        VALUES (?,?,'JRA',?,'2024-01-01T15:00:00+09:00',?,'M','B','i','f','2024-01-01T13:50:00+09:00','complete',1,'blend','[1,1,1]','[1,1,1]')""", (pid, r.race_id, at, tp))
         for u in range(1, 9):
             p = .5 if u == winner else (.2 if u == other else .3 / 6)
-            con.execute("""INSERT INTO prediction_horse(prediction_id,umaban,horse_id,waku,p_win_ai,p_win_market,p_win_blend,p_win_used,strength_ai,strength_used,win_odds)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (pid, u, f"T{u:04d}", (u + 1) // 2, p, 1 / 8, p, p, float(np.log(p)), float(np.log(p)), 2.4 if u == winner else 1.0))
+            win_odds = 2.4 if u == winner else 1.0
+            stamp = "2024-01-01T13:50:00+09:00"
+            # 新しい評価ガードに合わせ、台帳と同時刻の元オッズ取得履歴も用意する。
+            con.execute("""INSERT OR REPLACE INTO odds_snapshot(race_id,bet_type,combo,captured_at,odds,is_final,source)
+                           VALUES (?,'win',?,?,?,0,'test')""", (r.race_id, str(u), stamp, win_odds))
+            con.execute("""INSERT INTO prediction_horse(prediction_id,umaban,horse_id,waku,p_win_ai,p_win_market,p_win_blend,p_win_used,strength_ai,strength_used,win_odds,odds_captured_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (pid, u, f"T{u:04d}", (u + 1) // 2, p, 1 / 8, p, p, float(np.log(p)), float(np.log(p)), win_odds, stamp))
     run("P1", "2024-01-01T14:00:00+09:00")
     out = reconcile(con, "JRA")
     by = {(x["strategy"], x["bet_type"]): x for x in out["rows"]}
