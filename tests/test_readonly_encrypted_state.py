@@ -172,3 +172,26 @@ def test_encrypted_release_default_both_orgs_is_one_encrypted_array(
     assert [r["org"] for r in rows] == ["JRA", "NAR"]
     assert all(r["n_races"] == 0 for r in rows)
     assert not config.DB_PATH.exists()
+
+
+def test_authenticated_but_invalid_sqlite_backup_is_rejected_before_scoring(
+        tmp_path, monkeypatch):
+    """暗号の認証成功だけではDBの整合性を保証できない。破損DBを拒否。"""
+    key = bytes.fromhex("63" * 32)
+    monkeypatch.setenv("KEIBA_STATE_KEY", key.hex())
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as archive:
+        fake_db = b"invalid sqlite data, deliberately authenticated"
+        info = tarfile.TarInfo(name="keiba.db")
+        info.size = len(fake_db)
+        archive.addfile(info, io.BytesIO(fake_db))
+    nonce = bytes.fromhex("64" * 12)
+    backup = tmp_path / "invalid-but-valid-aes.enc"
+    backup.write_bytes(MAGIC + nonce + AESGCM(key).encrypt(nonce, buf.getvalue(), MAGIC))
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "production-must-not-exist.sqlite")
+    output = tmp_path / "report-must-not-exist.json"
+    with pytest.raises(ValueError, match="データベース"):
+        main(["reconcile", "--read-only", "--org", "NAR",
+              "--encrypted-state", str(backup), "--output", str(output)])
+    assert not config.DB_PATH.exists()
+    assert not output.exists()
