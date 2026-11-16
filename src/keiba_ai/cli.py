@@ -76,7 +76,8 @@ def _readonly_reconcile(args) -> int:
         for org in orgs:
             report = reconcile(con, org, persist=False, write_report=False)
             # 馬別予測やオッズの生データは出さない。公開CIでは出力リダイレクトも推奨。
-            fields = ("org", "n_races", "evaluation_coverage", "paired_model_comparison", "by_time_point")
+            fields = ("org", "n_races", "excluded_runs_without_verified_prestart_time",
+                      "evaluation_coverage", "paired_model_comparison", "by_time_point")
             print(json.dumps({k: report[k] for k in fields}, ensure_ascii=False, indent=1))
     return 0
 
