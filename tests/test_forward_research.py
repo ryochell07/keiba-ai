@@ -35,6 +35,9 @@ def test_walk_forward_only_scores_after_minimum_previous_dates():
     assert metrics["candidate"]["log_loss"] < metrics["deployed"]["log_loss"]
     assert out["relative_log_loss_improvement_vs_deployed_pct"] > 0
     assert out["candidate_minus_deployed_ci95"] is None  # 3日ではCIを出さない
+    assert out["promotion_gate"]["eligible_for_review"] is False
+    assert out["promotion_gate"]["applied_to_production"] is False
+    assert out["promotion_gate"]["checks"]["at_least_15_future_race_days"] is False
 
 
 def test_current_day_results_never_leak_into_weight_tuning():
