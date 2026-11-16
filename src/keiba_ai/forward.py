@@ -42,6 +42,34 @@ def _stats(rows: list[dict]) -> dict:
             "top1_roi": float(sum(x["ret"] for x in rows) / (100 * len(rows))), "ev100_bets": n_ev, "ev100_roi": float(sum(x["ev_ret"] for x in rows) / (100 * n_ev)) if n_ev else None}
 
 
+def _date_block_ci95(a: list[dict], b: list[dict], draws: int = 2000) -> dict | None:
+    """同日開催の相関を残し、日付単位で復元抽出した平均差の区間（記述統計用）。"""
+    if (not a or len(a) != len(b)
+            or any(not x.get("race_date") or x.get("race_date") != y.get("race_date")
+                   for x, y in zip(a, b))):
+        return None
+    dates = sorted({x["race_date"] for x in a})
+    if len(dates) < 10:
+        return None  # 独立した開催日が少なすぎる場合は区間を表示しない
+    day_index = {day: i for i, day in enumerate(dates)}
+    count = np.zeros(len(dates), dtype=float)
+    sums = {k: np.zeros(len(dates), dtype=float) for k in ("ll", "brier", "hit")}
+    for left, right in zip(a, b):
+        i = day_index[left["race_date"]]
+        count[i] += 1
+        for k in sums:
+            sums[k][i] += left[k] - right[k]
+    rng = np.random.default_rng(20261116)
+    sample = rng.integers(0, len(dates), size=(draws, len(dates)))
+    denominators = count[sample].sum(axis=1)
+    return {
+        label: [float(np.quantile(values[sample].sum(axis=1) / denominators, q))
+                for q in (0.025, 0.975)]
+        for label, values in (("log_loss", sums["ll"]), ("brier", sums["brier"]),
+                              ("top1_hit_rate", sums["hit"]))
+    }
+
+
 def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
     """同じレース集合での平均LogLoss/Brier差。負の差は左側モデルが優位。"""
     if not all(rows_by_model.get(k) for k in MODELS):
@@ -50,15 +78,22 @@ def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
     if any(len(rows_by_model[k]) != n for k in MODELS):
         raise ValueError("paired comparison requires equal race counts")
     # 少数レースの偶然の優劣を「改善」と誤認しないため、参考値かどうかを明示する。
-    result = {"n_races": n, "minimum_races_for_screening": 100,
+    race_dates = [r.get("race_date") for r in rows_by_model["ai"]]
+    n_dates = len(set(race_dates)) if all(race_dates) else None
+    result = {"n_races": n, "n_race_dates": n_dates, "minimum_races_for_screening": 100,
               "sufficient_sample_for_screening": n >= 100,
-              "note": "100レースは暫定的なスクリーニング目安であり、統計的有意性や採用基準ではない"}
+              "ci_method": "同一開催日のレースをまとめて再抽出した95%パーセンタイル区間（2000回、固定乱数）",
+              "ci_min_race_dates": 10,
+              "note": "100レースは暫定目安。区間は探索的で、将来成績・利益やモデル採用を保証しない"}
     for left, right in (("ai", "market"), ("blend", "market"), ("blend", "ai")):
         a, b = rows_by_model[left], rows_by_model[right]
+        if any(x.get("race_id") != y.get("race_id") for x, y in zip(a, b)):
+            raise ValueError("paired comparison requires matching race IDs")
         result[f"{left}_minus_{right}"] = {
             "log_loss": float(np.mean([x["ll"] - y["ll"] for x, y in zip(a, b)])),
             "brier": float(np.mean([x["brier"] - y["brier"] for x, y in zip(a, b)])),
             "top1_hit_rate": float(np.mean([x["hit"] - y["hit"] for x, y in zip(a, b)])),
+            "ci95": _date_block_ci95(a, b),
         }
     return result
 
@@ -135,7 +170,8 @@ def _fresh_prestart_odds(run: sqlite3.Row, max_age_min: int = STALE_MIN) -> bool
 def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_report: bool = True) -> dict:
     """発走前予測と結果を照合する。persist=False ならDBを変更せず、write_report=False ならファイルを作らない。"""
     runs = con.execute(
-        """SELECT p.* FROM prediction_run p
+        """SELECT p.*, r.race_date FROM prediction_run p
+           JOIN race r ON r.race_id=p.race_id
            WHERE p.org=? AND (p.scheduled_post_at IS NULL OR p.predicted_at<p.scheduled_post_at)
              AND EXISTS (SELECT 1 FROM result x WHERE x.race_id=p.race_id AND x.finish_pos=1)
            ORDER BY p.race_id, p.predicted_at, p.rowid""", (org,)).fetchall()
@@ -178,6 +214,8 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
             if all(scores.values()):
                 eligibility[tp]["paired_scored"] += 1
                 for m, score in scores.items():
+                    score["race_id"] = rid
+                    score["race_date"] = run["race_date"]
                     tp_rows[tp][m].append(score)
             else:
                 eligibility[tp]["paired_model_probabilities_invalid"] += 1
@@ -252,7 +290,7 @@ def reconcile(con: sqlite3.Connection, org: str, *, persist: bool = True, write_
         counts["odds_eligible_rate"] = counts["fresh_complete_odds"] / n if n else None
     report = {"org": org, "n_races": len(groups), "rows": out_rows, "updated_at": created, "selection_rule": SELECTION_RULE,
               "legacy_ev_basis_note": "rows の odds_basis=cutoff は既存互換ラベル。実際はレースごとの発走前最終予測であり、必ずしも発走10分前のオッズではない。発走前・同時刻・60分以内の条件を満たす場合のみEVを集計する。",
-              "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。統計的有意性や将来の回収率を保証しない",
+              "paired_model_comparison": {"metric_note": "同一レースでの左モデル-右モデル。LogLoss/Brierは負値が優位。区間は開催日単位の探索的ブートストラップで、統計的有意性・将来回収率を保証しない",
                                           "by_time_point": comparisons},
               "by_time_point": {tp: {k: _stats(v) for k, v in d.items()} for tp, d in tp_rows.items() if d},
               "evaluation_coverage": {"definition": "選択された発走前予測を母数とし、オッズは全頭同時刻・元スナップショットと一致・予測時点60分以内・発走前のみ",
