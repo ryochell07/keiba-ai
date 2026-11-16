@@ -143,6 +143,8 @@ def test_予測と結果の照合(con, tmp_path, monkeypatch):
     counts = out["evaluation_coverage"]["by_time_point"]["morning"]
     assert counts["paired_scored"] == 1
     assert counts["odds_snapshot_mismatch"] == 0
+    assert counts["n_model_versions"] == 1
+    assert counts["mixed_model_versions"] is False
     # 元オッズ履歴と台帳が食い違えば、市場比較・購入可能EVから除外する
     con.execute("""UPDATE odds_snapshot SET odds=odds+0.5
                    WHERE race_id=? AND bet_type='win' AND is_final=0
