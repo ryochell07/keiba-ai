@@ -43,6 +43,15 @@ def test_place_ev_requires_matching_snapshot_for_every_horse():
     con.execute("UPDATE odds_snapshot SET odds=1.5 WHERE combo='1'")
     con.execute("DELETE FROM odds_snapshot WHERE combo='2'")
     assert not _place_odds_same_time(con, "r", horses, stamp)
+    con.execute("INSERT INTO odds_snapshot VALUES ('r','place','2',?,2.0,0)", (stamp,))
+    con.execute("INSERT INTO odds_snapshot VALUES ('r','place','3',?,5.0,0)", (stamp,))
+    assert not _place_odds_same_time(con, "r", horses, stamp)  # 余分な取消馬の価格
+    con.execute("DELETE FROM odds_snapshot WHERE combo='3'")
+    con.execute("UPDATE odds_snapshot SET odds=? WHERE combo='2'", (float("inf"),))
+    assert not _place_odds_same_time(con, "r", horses, stamp)
+    con.execute("UPDATE odds_snapshot SET odds=2.0 WHERE combo='2'")
+    assert not _place_odds_same_time(con, "r", [{**horses[0], "place_odds": float("nan")}, horses[1]], stamp)
+    assert _place_odds_same_time(con, "r", horses, stamp)
 
 
 def test_fresh_odds_rejects_stale_future_and_poststart_quotes():
