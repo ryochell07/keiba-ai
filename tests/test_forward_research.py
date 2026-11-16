@@ -411,6 +411,19 @@ def test_evaluate_shadow_end_to_end_summary_omits_private_race_data(monkeypatch)
     assert all(rec["race_id"] not in encoded for rec in records)
 
 
+def test_walk_forward_reports_calibration_per_model():
+    rows = [_record(d, r) for d in range(1, 6) for r in range(25)]
+    scores = walk_forward_blend(rows, min_history=40)["scores_on_same_forward_test_races"]
+    ai = scores["ai"]["calibration"]
+    # AI は勝ち馬に0.9、負け馬に0.1。0.9の区間は全勝、0.1の区間は全敗なので、ずれはどちらも0.1
+    assert ai["ece_10bin"] == pytest.approx(0.1)
+    assert ai["n_horses"] == 150
+    assert ai["top1_mean_prob"] == pytest.approx(0.9)
+    assert ai["top1_hit"] == 1.0
+    # 0.5ずつの実採用は、0.5の区間で半分が勝つので完全に校正されている
+    assert scores["deployed"]["calibration"]["ece_10bin"] == pytest.approx(0.0)
+
+
 def test_evaluate_shadow_separates_current_model_from_mixed_versions(monkeypatch):
     """途中で再学習した場合、採用中の版だけで重みを選び直した評価を別に出す。"""
     import json

@@ -56,3 +56,19 @@ def test_readonly_evaluation_workflow_requires_main_owner_and_manual_dispatch():
     assert "cat \"$workdir/metrics.json\"" not in joined
     assert "evaluation.stderr" in steps[-1]["run"]
     assert "encryption.stderr" in steps[-1]["run"]
+    assert "summary.stderr" in steps[-1]["run"]
+
+
+def test_public_summary_is_opt_in_and_prints_only_the_whitelisted_table():
+    path = config.ROOT / ".github/workflows/forward-evaluate-readonly.yml"
+    flow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    option = flow["on"]["workflow_dispatch"]["inputs"]["public_summary"]
+    assert option["type"] == "boolean" and option["default"] == "false"
+    step = next(s for s in flow["jobs"]["evaluate"]["steps"] if "KEIBA_STATE_KEY" in s.get("env", {}))
+    script = step["run"]
+    # 既定では成績を出さずに終わり、表は要約モジュールの出力だけを表示する
+    stop = script.index('if [ "$EVAL_PUBLIC_SUMMARY" != "true" ]')
+    assert script.index("keiba_ai.eval_summary") > stop
+    assert '2> "$workdir/summary.stderr"' in script
+    assert 'cat "$workdir/summary.md"' in script
+    assert script.count("cat ") == 2
