@@ -77,13 +77,29 @@ def _date_block_ci95(a: list[dict], b: list[dict], draws: int = 2000) -> dict | 
 
 def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
     """同じレース集合での平均LogLoss/Brier差。負の差は左側モデルが優位。"""
-    if not all(rows_by_model.get(k) for k in MODELS):
+    if not any(rows_by_model.get(k) for k in MODELS):
         return {"n_races": 0}
-    n = len(rows_by_model["ai"])
-    if any(len(rows_by_model[k]) != n for k in MODELS):
-        raise ValueError("paired comparison requires equal race counts")
+    # 並び順の一致や件数の一致は「同一レース」の保証にはならない。
+    # 各レースIDをキーにして突き合わせ、欠損・重複は採点せず明示的に失敗する。
+    indexed: dict[str, dict[str, dict]] = {}
+    for model in MODELS:
+        rows = rows_by_model.get(model, [])
+        if not rows:
+            raise ValueError("paired comparison requires all model predictions")
+        by_race: dict[str, dict] = {}
+        for row in rows:
+            race_id = row.get("race_id")
+            if not race_id or race_id in by_race:
+                raise ValueError("paired comparison requires unique non-empty race IDs")
+            by_race[race_id] = row
+        indexed[model] = by_race
+    race_ids = sorted(indexed["ai"])
+    if any(set(indexed[model]) != set(race_ids) for model in MODELS):
+        raise ValueError("paired comparison requires matching race IDs")
+    ordered = {model: [indexed[model][rid] for rid in race_ids] for model in MODELS}
+    n = len(race_ids)
     # 少数レースの偶然の優劣を「改善」と誤認しないため、参考値かどうかを明示する。
-    race_dates = [r.get("race_date") for r in rows_by_model["ai"]]
+    race_dates = [r.get("race_date") for r in ordered["ai"]]
     n_dates = len(set(race_dates)) if all(race_dates) else None
     result = {"n_races": n, "n_race_dates": n_dates, "minimum_races_for_screening": 100,
               "sufficient_sample_for_screening": n >= 100,
@@ -91,9 +107,9 @@ def _paired_comparison(rows_by_model: dict[str, list[dict]]) -> dict:
               "ci_min_race_dates": 10,
               "note": "100レースは暫定目安。区間は探索的で、将来成績・利益やモデル採用を保証しない"}
     for left, right in (("ai", "market"), ("blend", "market"), ("blend", "ai")):
-        a, b = rows_by_model[left], rows_by_model[right]
-        if any(x.get("race_id") != y.get("race_id") for x, y in zip(a, b)):
-            raise ValueError("paired comparison requires matching race IDs")
+        a, b = ordered[left], ordered[right]
+        if any(x.get("race_date") != y.get("race_date") for x, y in zip(a, b)):
+            raise ValueError("paired comparison requires consistent race dates")
         result[f"{left}_minus_{right}"] = {
             "log_loss": float(np.mean([x["ll"] - y["ll"] for x, y in zip(a, b)])),
             "brier": float(np.mean([x["brier"] - y["brier"] for x, y in zip(a, b)])),
