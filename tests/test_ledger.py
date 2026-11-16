@@ -376,6 +376,7 @@ def test_stale_complete_win_odds_fall_back_to_ai_and_hide_stale_ev(world, monkey
               "2030-03-25T09:00:00+09:00", False, "t")
     stats = predict_races(con, "JRA", race.race_date, at="2030-03-25T10:05:00+09:00")
     assert stats["recorded"] == 1
+    assert stats["market_stale_races"] == 1
     stale = con.execute("SELECT * FROM prediction_run WHERE race_id=? ORDER BY predicted_at DESC",
                         (race.race_id,)).fetchone()
     assert (stale["odds_status"], stale["odds_same_time"], stale["used_model"]) == ("complete", 1, "ai")
@@ -391,6 +392,7 @@ def test_stale_complete_win_odds_fall_back_to_ai_and_hide_stale_ev(world, monkey
               "2030-03-25T15:28:00+09:00", False, "t")
     fresh_stats = predict_races(con, "JRA", race.race_date, at="2030-03-25T15:30:00+09:00")
     assert fresh_stats["recorded"] == 1
+    assert fresh_stats["market_ready_races"] == 1
     fresh = con.execute("SELECT * FROM prediction_run WHERE race_id=? ORDER BY predicted_at DESC",
                         (race.race_id,)).fetchone()
     assert fresh["used_model"] == "market"
@@ -410,7 +412,9 @@ def test_different_win_odds_timestamps_do_not_mix_market_predictions(world, monk
               "2030-03-26T15:28:00+09:00", False, "t")
     save_odds(con, race.race_id, [OddsRec("win", "8", 10.0)],
               "2030-03-26T15:29:00+09:00", False, "t")
-    assert predict_races(con, "JRA", race.race_date, at="2030-03-26T15:30:00+09:00")["recorded"] == 1
+    mixed_stats = predict_races(con, "JRA", race.race_date, at="2030-03-26T15:30:00+09:00")
+    assert mixed_stats["recorded"] == 1
+    assert mixed_stats["market_mixed_timestamp_races"] == 1
     run = con.execute("SELECT * FROM prediction_run WHERE race_id=?", (race.race_id,)).fetchone()
     assert run["odds_status"] == "complete"  # 値は各馬にあるが、同一取得時刻ではない
     assert run["odds_same_time"] == 0
