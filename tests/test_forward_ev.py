@@ -320,3 +320,42 @@ def test_chronological_prestart_selection_uses_actual_utc_instant():
     ordered = _chronological_prestart_runs(candidates)
     assert [r["prediction_id"] for r in ordered] == ["early", "late"]
     assert _select(ordered)[("r", "last")]["prediction_id"] == "late"
+
+
+def test_quote_is_fresh_rejects_stale_future_missing_and_poststart_odds():
+    from datetime import datetime
+    from keiba_ai.ev import quote_is_fresh
+
+    post = datetime.fromisoformat("2030-03-02T10:30:00+09:00")
+    now = datetime.fromisoformat("2030-03-02T10:00:00+09:00")
+    base = {"captured_at": "2030-03-02T09:59:00+09:00", "odds": 3.0}
+    assert quote_is_fresh(base, now, post)
+    assert quote_is_fresh({**base, "captured_at": "2030-03-02T00:59:00+00:00"}, now, post)
+    assert not quote_is_fresh({**base, "captured_at": "2030-03-02T08:59:00+09:00"}, now, post)
+    assert not quote_is_fresh({**base, "captured_at": "2030-03-02T10:01:00+09:00"}, now, post)
+    assert not quote_is_fresh({**base, "captured_at": "2030-03-02T10:30:00+09:00"}, now, post)
+    assert not quote_is_fresh({**base, "odds": 0.0}, now, post)
+    assert not quote_is_fresh({**base, "odds": float("nan")}, now, post)
+    assert not quote_is_fresh({**base, "captured_at": "invalid"}, now, post)
+    assert not quote_is_fresh({**base, "captured_at": "2030-03-02T09:59:00"}, now, post)
+    assert not quote_is_fresh(base, now, None)
+
+
+def test_latest_odds_compares_actual_utc_instants_not_timestamp_strings():
+    import sqlite3
+    from keiba_ai.ev import latest_odds
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute("""CREATE TABLE odds_snapshot(
+        race_id TEXT, bet_type TEXT, combo TEXT, odds REAL, odds_max REAL,
+        captured_at TEXT, is_final INTEGER)""")
+    con.executemany("INSERT INTO odds_snapshot VALUES ('r','win','1',?,NULL,?,0)", [
+        (2.0, "2030-03-02T09:00:00+09:00"),
+        (3.0, "2030-03-02T01:05:00+00:00"),  # 日本時間10:05、10:00の未来
+        (4.0, "2030-03-02T00:55:00+00:00"),  # 日本時間09:55
+    ])
+    before = latest_odds(con, "r", "2030-03-02T10:00:00+09:00", include_final=False)
+    assert before[("win", "1")]["odds"] == 4.0
+    after = latest_odds(con, "r", "2030-03-02T10:06:00+09:00", include_final=False)
+    assert after[("win", "1")]["odds"] == 3.0
