@@ -18,6 +18,7 @@
 
 ## レポートの読み方
 
+- `excluded_runs_without_verified_prestart_time`: 発走予定時刻が欠ける・形式が不正・予測が発走予定時刻以降など、**発走前だったことを検証できない**予測履歴の除外件数。予測時刻・発走時刻はタイムゾーン付き日時として比較し、同時点内の選択も実際の時系列で行う
 - `evaluation_coverage.by_time_point.*.selected_runs`: 各時点で選択された発走前予測
 - `ai_scored`: AIの確率と着順だけで評価可能なもの
 - `fresh_complete_odds`: 全頭・同時刻の単勝オッズが元の非確定取得履歴と一致し、発走前・予測時点60分以内であるもの
