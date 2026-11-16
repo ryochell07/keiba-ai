@@ -89,6 +89,10 @@ def _readonly_reconcile_database(args, path, *, immutable: bool = False) -> int:
             fields = ("org", "n_races", "n_races_with_selected_prestart_run",
                       "excluded_runs_without_verified_prestart_time",
                       "evaluation_coverage", "paired_model_comparison", "by_time_point")
+            if getattr(args, "research", False):
+                from .forward_research import evaluate_shadow
+                report["shadow_research"] = evaluate_shadow(con, org)
+                fields += ("shadow_research",)
             summaries.append({k: report[k] for k in fields})
     payload = json.dumps(summaries[0] if len(summaries) == 1 else summaries,
                          ensure_ascii=False, indent=1) + "\n"
@@ -189,6 +193,8 @@ def main(argv=None) -> int:
         ap.error("--encrypted-state では --output に非公開ファイルの保存先を指定してください")
     if args.cmd == "reconcile" and args.output and not args.read_only:
         ap.error("--output は --read-only と併用してください")
+    if args.cmd == "reconcile" and args.research and not args.read_only:
+        ap.error("--research は --read-only と併用してください")
     if args.cmd == "reconcile" and args.read_only:
         return _readonly_reconcile(args)
     config.ensure_dirs()
