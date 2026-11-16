@@ -94,6 +94,34 @@ def _score_record(record: dict, probabilities: dict[int, float]) -> dict:
     }
 
 
+def _paired_roi_difference_ci95(candidate: list[dict], deployed: list[dict],
+                                draws: int = 2000) -> list[float] | None:
+    """候補−採用モデルのTOP1 ROI差。開催日単位の探索的95%区間。
+
+    全将来レースの払戻が検証済みで、同一レースに対応する場合だけ計算。
+    ROIは回収額/100円ベットの倍率で表現する。
+    """
+    if len(candidate) != len(deployed) or not candidate or draws < 1:
+        return None
+    by_day: dict[str, list[float]] = defaultdict(list)
+    for left, right in zip(candidate, deployed):
+        if (not left.get("race_id") or left["race_id"] != right.get("race_id")
+                or not left.get("race_date") or left["race_date"] != right.get("race_date")
+                or left["ret"] is None or right["ret"] is None
+                or not np.isfinite(left["ret"]) or not np.isfinite(right["ret"])):
+            return None
+        by_day[left["race_date"]].append((left["ret"] - right["ret"]) / 100.0)
+    if len(by_day) < 10:
+        return None
+    days = sorted(by_day)
+    sums = np.array([sum(by_day[d]) for d in days], dtype=float)
+    counts = np.array([len(by_day[d]) for d in days], dtype=float)
+    rng = np.random.default_rng(20261116)
+    picks = rng.integers(0, len(days), size=(draws, len(days)))
+    sampled = sums[picks].sum(axis=1) / counts[picks].sum(axis=1)
+    return [float(np.quantile(sampled, q)) for q in (0.025, 0.975)]
+
+
 def walk_forward_blend(records: list[dict], *, min_history: int = 50,
                        min_history_dates: int = 2, brier_weight: float = 0.0) -> dict:
     """同一開催日の結果を見て同日レースを調整しない、逐次外部検証。"""
@@ -136,6 +164,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
     reference = selected["deployed"]
     candidate = selected["candidate"]
     delta = (_date_block_ci95(candidate, reference) if n else None)
+    roi_ci = _paired_roi_difference_ci95(candidate, reference) if n else None
     candidate_mean = scored.get("candidate", {}).get("log_loss")
     deployed_mean = scored.get("deployed", {}).get("log_loss")
     improvement = (
@@ -174,6 +203,9 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             and deployed_stats.get("top1_roi") is not None
             and candidate_stats["top1_roi"] >= deployed_stats["top1_roi"]
         ),
+        # 平均ROIが同等でも、開催日単位の不確実性が大きければ保留。
+        # 0以上の下限が必要（差は候補ROI−現行ROI）。
+        "roi_cluster_ci_not_worse": bool(roi_ci and roi_ci[0] >= 0),
     }
     return {
         "promotion_gate": {
@@ -198,6 +230,7 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
             if candidate_mean is not None and deployed_mean is not None else None
         ),
         "candidate_minus_deployed_ci95": delta,
+        "candidate_minus_deployed_roi_ci95": roi_ci,
         "note": "学習データは必ず以前の開催日のみ。調整を行う研究候補で、本番採用や収益改善を意味しない",
     }
 
