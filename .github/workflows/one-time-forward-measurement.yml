@@ -51,7 +51,7 @@ jobs:
             exit 1
           fi
           code=0
-          .venv/bin/keiba reconcile --read-only \
+          .venv/bin/keiba reconcile --read-only --research \
             --encrypted-state "$work/keiba-state.enc" \
             --output "$work/private-metrics.json" \
             > "$work/internal.stdout" 2> "$work/internal.stderr" || code=$?
@@ -81,7 +81,7 @@ jobs:
                   selected = c.get("selected_runs", 0)
                   valid = c.get("outcome_valid", 0)
                   n = c.get("paired_scored", 0)
-                  print(f"COVERAGE org={org} tp={tp} selected={selected} valid_outcomes={valid} paired={n} ai_scored={c.get('ai_scored',0)} deployed_scored={c.get('deployed_scored',0)}")
+                  print(f"COVERAGE org={org} tp={tp} selected={selected} valid_outcomes={valid} paired={n} ai_scored={c.get('ai_scored',0)} deployed_scored={c.get('deployed_scored',0)} incomplete={c.get('incomplete_results',0)} runner_mismatch={c.get('runner_set_mismatch',0)} tied_or_missing_winner={c.get('multiple_or_missing_winners',0)} odds_metadata_invalid={c.get('odds_metadata_invalid',0)} odds_timing_invalid={c.get('odds_timing_invalid',0)} snapshot_mismatch={c.get('odds_snapshot_mismatch',0)} probabilities_invalid={c.get('paired_model_probabilities_invalid',0)}")
                   def fmt(x):
                       return f"{x:.6f}" if isinstance(x, (int, float)) and math.isfinite(x) else "NA"
                   m = scores.get(tp, {})
@@ -96,6 +96,17 @@ jobs:
                           delta = d.get(pair, {})
                           if delta:
                               print(f"DELTA org={org} tp={tp} pair={pair} n={n} logloss={fmt(delta.get('log_loss'))} brier={fmt(delta.get('brier'))} top1hit={fmt(delta.get('top1_hit_rate'))}")
+              shadow = r.get("shadow_research", {}).get("by_time_point", {})
+              for tp in ("t30", "t10", "last"):
+                  x = shadow.get(tp, {})
+                  if not x:
+                      continue
+                  sc = x.get("scores_on_same_forward_test_races", {})
+                  print(f"SHADOW org={org} tp={tp} valid={x.get('valid_races',0)} days={x.get('valid_days',0)} oos={x.get('forward_test_races',0)} oos_days={x.get('forward_test_days',0)} alpha_mean={fmt(x.get('mean_ai_weight'))} improvement_vs_deployed_pct={fmt(x.get('relative_log_loss_improvement_vs_deployed_pct'))}")
+                  for model in ("candidate", "deployed", "ai", "market", "blend"):
+                      z = sc.get(model, {})
+                      if z:
+                          print(f"SHADOW_SCORE org={org} tp={tp} model={model} n={z.get('n_races',0)} logloss={fmt(z.get('log_loss'))} brier={fmt(z.get('brier'))} hit={fmt(z.get('top1_hit'))} roi={fmt(z.get('top1_roi'))} roi_n={z.get('top1_roi_races',0)}")
           print("AGGREGATE_FORWARD_AUDIT_END")
           PY
 
