@@ -95,7 +95,32 @@ def walk_forward_blend(records: list[dict], *, min_history: int = 50,
         (deployed_mean - candidate_mean) / deployed_mean * 100
         if candidate_mean is not None and deployed_mean is not None and deployed_mean > 0 else None
     )
+    # 研究用に見つかった小幅改善を、そのまま本番採用しないための多重ゲート。
+    # 連続する異なる開催日と同一レース比較の十分な規模が必要。
+    candidate_stats = scored.get("candidate", {})
+    deployed_stats = scored.get("deployed", {})
+    ci_ll = (delta or {}).get("log_loss")
+    checks = {
+        "at_least_300_future_races": n >= 300,
+        "at_least_15_future_race_days": evaluation_days >= 15,
+        "cluster_95pct_interval_below_zero": bool(ci_ll and ci_ll[1] < 0),
+        "brier_not_worse": bool(
+            candidate_stats and deployed_stats
+            and candidate_stats["brier"] <= deployed_stats["brier"]
+        ),
+        "top1_roi_not_worse_on_verified_results": bool(
+            candidate_stats.get("top1_roi_races", 0) >= 300
+            and candidate_stats.get("top1_roi") is not None
+            and deployed_stats.get("top1_roi") is not None
+            and candidate_stats["top1_roi"] >= deployed_stats["top1_roi"]
+        ),
+    }
     return {
+        "promotion_gate": {
+            "eligible_for_review": all(checks.values()),
+            "applied_to_production": False,
+            "checks": checks,
+        },
         "valid_races": len(records), "valid_days": len(days),
         "minimum_training_races": min_history, "minimum_training_days": min_history_dates,
         "forward_test_races": n, "forward_test_days": evaluation_days,
