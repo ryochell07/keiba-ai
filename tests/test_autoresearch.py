@@ -168,7 +168,7 @@ def test_記録の指紋と重複():
 
 
 def test_エージェントには確認期間の数値を渡さない():
-    e = {"run_id": "r", "org": "NAR", "key": "k", "status": "confirm_failed", "primary_track": "ai",
+    e = {"run_id": "r", "org": "NAR", "key": "k", "status": "confirm_failed", "primary_track": "ai", "reason": "差 +0.123456",
          "explore": {"ai": {"d_ll": -0.01, "d_ll_ci": [-0.02, -0.001], "d_brier": -0.001}},
          "confirm": {"ai": {"d_ll": 0.123456, "d_ll_ci": [0.1, 0.2], "d_brier": 0.01}}}
     out = json.dumps(ledger.for_agent([e]))
