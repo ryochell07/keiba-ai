@@ -1,0 +1,59 @@
+# 自動研究エージェントの設定 (docs/AUTORESEARCH.md)。
+# 実行時は tools の作業コピーにあるこのファイルを読む。エージェント (Claude) からは書き換えられない。
+home: ~/keiba-agent
+# 研究用の読み取り専用スナップショット。開発用DBはここから封鎖期間を除いて作る
+snapshot_db: ~/keiba-research/data/keiba.db
+
+periods:
+  sealed_from: "2026-03-01"                # lab.LOCKED_FROM。これ以降のレースは開発用DBに入れない
+  explore: ["2025-03-01", "2025-09-01"]    # lab.TUNE。仮説の探索と反復に使う
+  confirm: ["2025-09-01", "2026-03-01"]    # lab.SELECT。探索で合格した案だけを確認する
+
+protocol:
+  # 学習の開始日。基準と候補で同じ値を使う
+  train_since: {JRA: "2024-01-01", NAR: "2022-01-01"}
+  # 特徴量の履歴を作るために、学習の開始より前から読み込む
+  history_from: {JRA: "2024-01-01", NAR: "2021-01-01"}
+  n_seeds: 1
+
+gate:
+  # 探索期間と確認期間の両方で満たしたときだけ「改善」とする
+  min_races: 300
+  min_days: 15
+  # Log Loss の差 (候補 - 基準) の95%区間の上限がこれ未満
+  ll_ci_high_below: 0.0
+  # Brier の差の平均がこれ未満 (悪化していない)
+  brier_mean_below: 0.0
+
+limits:
+  max_cycles_per_day: 2
+  max_cycles_per_week: 8
+  min_hours_between_cycles: 4
+  claude_max_turns: 60
+  claude_timeout_min: 45
+  quick_evals_per_cycle: 3
+  cycle_timeout_min: 240
+  min_free_disk_gb: 5
+  require_ac_power: true
+  # Claude の利用上限に当たったら、この時間は起動しない
+  pause_after_usage_limit_hours: 6
+  max_open_draft_prs: 3
+
+github:
+  repo: ryochell07/keiba-ai
+  task_label: agent-task
+  # この作成者の Issue だけを指示として読む (公開リポジトリなので誰でも Issue を作れる)
+  trusted_authors: [ryochell07]
+  max_issue_chars: 4000
+  comment_on_issues: true
+
+claude:
+  binary: /opt/homebrew/bin/claude
+  model: null                 # null ならアカウントの既定のモデル
+  # サブスクリプションのログインだけを使う。API キーなど従量課金の認証なら起動しない
+  allowed_auth_methods: [claude.ai]
+
+# エージェントが変更してよいファイル。これ以外が変わっていたら評価せず記録だけする
+allowed_changes:
+  modify: [src/keiba_ai/features.py, src/keiba_ai/gbm.py, src/keiba_ai/probs.py]
+  add: ["tests/test_agent_*.py"]

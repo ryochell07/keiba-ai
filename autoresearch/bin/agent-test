@@ -1,0 +1,4 @@
+#!/bin/sh
+# 作業コピーのテスト。引数がなければ全部、あればそのファイルだけ
+cd "$AGENT_WORK" || exit 1
+exec env PYTHONPATH="$AGENT_WORK/src" "$AGENT_PYTHON" -m pytest -q -x -p no:cacheprovider "${@:-tests}"
