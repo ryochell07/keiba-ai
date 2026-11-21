@@ -1,0 +1,19 @@
+#!/bin/sh
+# 権限の動作確認用。通信と ~/keiba-ai の読み取りが止められているかを .agent/ に書く
+cd "$AGENT_WORK" || exit 1
+exec "$AGENT_PYTHON" - <<'PY'
+import urllib.request
+from pathlib import Path
+
+
+def probe(fn):
+    try:
+        fn()
+        return "open"
+    except Exception:
+        return "blocked"
+
+
+Path(".agent/smoke_net.txt").write_text(probe(lambda: urllib.request.urlopen("https://example.com", timeout=5)))
+Path(".agent/smoke_read.txt").write_text(probe(lambda: open(Path.home() / "keiba-ai" / "README.md").read(1)))
+PY
