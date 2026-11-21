@@ -1,0 +1,24 @@
+name: 自動研究への指示
+description: 自動研究エージェントに試してほしい改善案を伝える (ChatGPT の文面をそのまま貼ってよい)
+title: "[研究] "
+labels: [agent-task]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        リポジトリの所有者が作った Issue (と所有者のコメント) だけが、エージェントへの指示として読まれます。
+        指示は研究の方向づけとして使われ、評価の手順や安全のための規則は変えられません。
+        結果はこの Issue にコメントされます。終わったら Issue を閉じてください。
+        個人情報・認証情報・取得したデータの行は書かないでください (公開されます)。
+  - type: textarea
+    id: request
+    attributes:
+      label: 試してほしいこと
+      description: 仮説、対象 (中央・地方)、変更の方向 (特徴量・LightGBM・確率の校正・市場オッズとの合成など)、確かめたい点
+    validations:
+      required: true
+  - type: dropdown
+    id: org
+    attributes:
+      label: 対象
+      options: [どちらでも, 中央 (JRA), 地方 (NAR)]

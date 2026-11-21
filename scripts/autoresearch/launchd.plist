@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 自動研究エージェントの定期実行。1時間ごとに起動し、回数の上限などを満たすときだけ1サイクル動く。
+     __HOME__ は install.sh が置き換える。Mac がスリープ中は動かない。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ryochell07.keiba-autoresearch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- 実行中だけ、操作がなくてもスリープしないようにする -->
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>__HOME__/tools/.venv/bin/python</string>
+    <string>-m</string>
+    <string>autoresearch.runner</string>
+    <string>cycle</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__HOME__/tools</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>__HOME__/tools</string>
+    <key>KEIBA_AGENT_HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/logs/launchd.err.log</string>
+</dict>
+</plist>

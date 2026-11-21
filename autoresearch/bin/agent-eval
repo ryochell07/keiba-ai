@@ -1,0 +1,3 @@
+#!/bin/sh
+# エージェント用の簡易評価。探索期間だけを使い、1サイクルの回数に上限がある
+exec "$AGENT_PYTHON" -W ignore -m autoresearch.quick "$@"

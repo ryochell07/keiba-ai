@@ -85,5 +85,6 @@ packages = ["src/keiba_ai"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]   # autoresearch (自動研究エージェント) を読み込むため
 markers = ["network: 実サイトへアクセスするテスト (既定では実行しない)"]
 addopts = "-m 'not network'"
