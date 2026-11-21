@@ -209,13 +209,16 @@ def test_Claude_の設定():
     s = runner.claude_settings(P)
     sb = s["sandbox"]
     assert sb["enabled"] and sb["allowUnsandboxedCommands"] is False and sb["failIfUnavailable"] and sb["network"]["allowedDomains"] == []
-    assert s["permissions"]["defaultMode"] == "dontAsk"
+    assert s["permissions"]["defaultMode"] == "acceptEdits"
     deny = "\n".join(sb["filesystem"]["denyRead"])
     for p in ("keiba-ai", "keiba-research", ".ssh", ".config/gh", "Keychains", str(P.db), str(P.ledger), str(P.runs), "lab_summary.json"):
         assert p in deny, p
     assert str(P.explore_db) not in deny
     assert {str(P.tools), str(P.data)} <= set(sb["filesystem"]["denyWrite"])
     assert "WebFetch" in s["permissions"]["deny"]
+    src = (ROOT / "autoresearch" / "runner.py").read_text(encoding="utf-8")
+    for flag in ('"--permission-prompts", "none"', '"--strict-mcp-config"', '"--tools", "Bash,Read,Edit,Write,Glob,Grep"', '"--max-turns"'):
+        assert flag in src, flag
     env = runner.claude_env(P, {"X": "1"})
     assert not any(k.startswith(("ANTHROPIC", "GH_", "GITHUB", "KEIBA_STATE", "KEIBA_SITE")) for k in env)
 

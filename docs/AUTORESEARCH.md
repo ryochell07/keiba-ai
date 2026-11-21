@@ -54,7 +54,8 @@ Mac の Claude Code (Claude Pro のログイン) を使い、予測精度の改�
 | 固定中の本番モデルを変えない | 既存の特徴量の列の値が変わる案は不合格にする。`freeze_models: true` と `market_only_orgs` は変えられない |
 | 本番に書き込まない | エージェント専用の複製 `~/keiba-agent/repo` で作業する。本番のDB・Release・Secrets・ワークフローを扱う命令は実行役のコードにない (テストで確認) |
 | main に入れない | 作るのは Draft PR だけ。マージは利用者が行う |
-| Claude の権限を絞る | 通信なし、書き込みは作業コピーとキャッシュだけ、`~/keiba-ai` と `~/keiba-research` と鍵の場所は読めない、Web と MCP は使えない、確認なしで許可されない操作は拒否 (`dontAsk`) |
+| Claude の権限を絞る | 通信なし、書き込みは作業コピーとキャッシュだけ、`~/keiba-ai` と `~/keiba-research` と鍵の場所は読めない、Web と MCP は使えない。作業フォルダ内の編集と制限付きの Bash 以外は、確認を求めずに拒否する (`acceptEdits` と `--permission-prompts none`) |
+| 権限が効いているかの確認 | 評価役の版か Claude Code の版が変わるたびに、本番の前に短い確認を行う。通信・`~/keiba-ai` の読み取り・評価役のフォルダへの書き込みが止まることを、できたファイルで確かめる。だめなら中止する |
 | 候補のコードを閉じ込める | 実行役も候補のコードは `sandbox-exec` の中で動かす (通信なし・書き込み先を限定)。プロセスの間は CSV と JSON だけで受け渡す |
 | 変更の範囲 | `features.py`、`gbm.py`、`probs.py` と新しいテスト `tests/test_agent_*.py` だけ。依存パッケージは増やせない |
 | 利用枠 | 1日2回、7日で8回、間隔4時間以上、1回60ターン・45分まで。利用上限に当たったら6時間止まる。電源につながっていないときは動かない |
@@ -64,21 +65,29 @@ Claude Code の設定は実行ごとに `runs/<実行>/claude-settings.json` に
 
 ## 導入 (一度だけ)
 
-1. Mac のターミナルで Claude Code にログインします。Claude Pro のアカウントを選んでください。
+1. 自動研究エージェントを入れます (定期実行はまだ登録しない)。
+
+```bash
+bash scripts/autoresearch/install.sh --no-schedule
+```
+
+2. Mac のターミナルで Claude Code にログインします。Claude Pro のアカウントを選んでください。
 
 ```bash
 claude auth login
 ```
 
-2. 自動研究エージェントを入れて、定期実行を登録します。
+3. 権限の設定が効いているかを確かめます。「問題なし」と出れば大丈夫です。
+
+```bash
+cd ~/keiba-agent/tools && .venv/bin/python -m autoresearch.runner smoke
+```
+
+4. 定期実行を登録します。1時間ごとに起動し、上限の範囲で動きます。Mac がスリープ中は動きません。
 
 ```bash
 bash ~/keiba-agent/tools/scripts/autoresearch/install.sh
 ```
-
-`~/keiba-agent/tools` がまだない場合は、リポジトリの `scripts/autoresearch/install.sh` を直接実行します。
-
-1時間ごとに起動し、上限の範囲で動きます。Mac がスリープ中は動きません。
 
 ## 使い方
 

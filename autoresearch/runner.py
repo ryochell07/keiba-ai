@@ -77,6 +77,11 @@ def claude_env(P: settings.Paths, extra: dict | None = None) -> dict:
     return env
 
 
+def claude_version(cfg: dict) -> str:
+    r = subprocess.run([cfg["claude"]["binary"], "--version"], capture_output=True, text=True, timeout=60)
+    return r.stdout.strip().split(" ")[0]
+
+
 def claude_auth(cfg: dict, P: settings.Paths) -> str:
     r = subprocess.run([cfg["claude"]["binary"], "auth", "status"], capture_output=True, text=True, env=claude_env(P), timeout=60)
     try:
@@ -244,10 +249,10 @@ def claude_settings(P: settings.Paths) -> dict:
     deny_dirs = sandbox.secret_paths() + [P.db, devdb.manifest_path(P.db), P.ledger, P.state, P.runs]
     return {
         "permissions": {
-            "defaultMode": "dontAsk",
+            "defaultMode": "acceptEdits",
             "allow": [f"Edit({a(P.work)}/src/keiba_ai/**)", f"Edit({a(P.work)}/tests/**)", f"Edit({a(P.work)}/.agent/**)",
                       f"Read({a(P.work)}/**)", f"Read({a(P.tools)}/autoresearch/**)"],
-            "deny": ([f"Read({a(d)}/**)" if d.is_dir() or d == P.runs else f"Read({a(d)})" for d in deny_dirs]
+            "deny": ([f"Read({a(d)})" if d.suffix or d.name in (".netrc", ".git-credentials") else f"Read({a(d)}/**)" for d in deny_dirs]
                      + [f"Read({a(P.work)}/{doc})" for doc in SEALED_DOCS] + [f"Read({a(P.cache)}/**/confirm_*)"]
                      + [f"Edit({a(P.tools)}/**)", f"Edit({a(P.base)}/**)", f"Edit({a(P.work)}/.github/**)", f"Edit({a(P.work)}/config/**)",
                         f"Edit({a(P.ledger)})", f"Edit({a(P.state)})", "WebFetch", "WebSearch"]),
@@ -315,24 +320,21 @@ def usage_limited(result: dict) -> bool:
     return any(w in text for w in USAGE_LIMIT_WORDS) and bool(result.get("is_error") or result.get("subtype") != "success")
 
 
-def run_claude(cfg: dict, P: settings.Paths, run_dir: Path, sha: str, bd: Path) -> dict:
-    prompt = PROMPT.read_text(encoding="utf-8").format(
-        work=P.work, base_sha=sha[:12], quick_limit=cfg["limits"]["quick_evals_per_cycle"], db=P.explore_db, sealed_from=cfg["periods"]["sealed_from"],
-        explore=" 〜 ".join(cfg["periods"]["explore"]), confirm=" 〜 ".join(cfg["periods"]["confirm"]))
+def _claude(cfg: dict, P: settings.Paths, prompt: str, run_dir: Path, env: dict, max_turns: int, timeout_s: int, name: str) -> dict:
+    """Claude Code を1回だけ非対話で動かす。作業フォルダ内の編集と制限付きの Bash だけを許し、確認が要る操作は全部拒否する。"""
+    run_dir.mkdir(parents=True, exist_ok=True)
     settings_file = run_dir / "claude-settings.json"
     settings_file.write_text(json.dumps(claude_settings(P), ensure_ascii=False, indent=1), encoding="utf-8")
-    env = claude_env(P, {"PYTHONPATH": f"{P.work / 'src'}:{P.tools}", "KEIBA_DB": str(P.explore_db),
-                         "KEIBA_AGENT_HOME": str(P.home), "AGENT_WORK": str(P.work), "AGENT_RUN_DIR": str(P.work / ".agent"),
-                         "AGENT_BASE_DIR": str(bd), "AGENT_PYTHON": str(P.python)})
-    cmd = [cfg["claude"]["binary"], "-p", prompt, "--output-format", "json", "--max-turns", str(cfg["limits"]["claude_max_turns"]),
-           "--permission-mode", "dontAsk", "--settings", str(settings_file), "--tools", "Bash,Read,Edit,Write,Glob,Grep",
-           "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands", "--no-chrome"]
+    cmd = [cfg["claude"]["binary"], "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns),
+           "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--settings", str(settings_file),
+           "--tools", "Bash,Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+           "--disable-slash-commands", "--no-chrome"]
     if cfg["claude"].get("model"):
         cmd += ["--model", cfg["claude"]["model"]]
     t0 = time.time()
     try:
-        r = subprocess.run(cmd, cwd=P.work, env=env, capture_output=True, text=True, timeout=cfg["limits"]["claude_timeout_min"] * 60)
-        (run_dir / "claude.err").write_text(r.stderr[-20000:], encoding="utf-8")
+        r = subprocess.run(cmd, cwd=P.work, env=env, capture_output=True, text=True, timeout=timeout_s)
+        (run_dir / f"{name}.err").write_text(r.stderr[-20000:], encoding="utf-8")
         try:
             result = json.loads(r.stdout)
         except json.JSONDecodeError:
@@ -340,8 +342,53 @@ def run_claude(cfg: dict, P: settings.Paths, run_dir: Path, sha: str, bd: Path) 
     except subprocess.TimeoutExpired:
         result = {"is_error": True, "subtype": "timeout"}
     result["seconds"] = round(time.time() - t0)
-    (run_dir / "claude.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    (run_dir / f"{name}.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return result
+
+
+def agent_env(P: settings.Paths, bd: Path) -> dict:
+    return claude_env(P, {"PYTHONPATH": f"{P.work / 'src'}:{P.tools}", "KEIBA_DB": str(P.explore_db), "KEIBA_AGENT_HOME": str(P.home),
+                          "AGENT_WORK": str(P.work), "AGENT_RUN_DIR": str(P.work / ".agent"), "AGENT_BASE_DIR": str(bd),
+                          "AGENT_PYTHON": str(P.python), "PYTHONDONTWRITEBYTECODE": "1"})
+
+
+def run_claude(cfg: dict, P: settings.Paths, run_dir: Path, sha: str, bd: Path) -> dict:
+    prompt = PROMPT.read_text(encoding="utf-8").format(
+        work=P.work, base_sha=sha[:12], quick_limit=cfg["limits"]["quick_evals_per_cycle"], db=P.explore_db, sealed_from=cfg["periods"]["sealed_from"],
+        explore=" 〜 ".join(cfg["periods"]["explore"]), confirm=" 〜 ".join(cfg["periods"]["confirm"]))
+    return _claude(cfg, P, prompt, run_dir, agent_env(P, bd), cfg["limits"]["claude_max_turns"], cfg["limits"]["claude_timeout_min"] * 60, "claude")
+
+
+SMOKE_PROMPT = """これは権限設定の動作確認です。失敗する手順があるのは想定どおりなので、結果を気にせず、次の4つを順に1回ずつ試して終えてください。説明は不要です。
+1. Bash で `agent-probe` を実行する
+2. Write ツールで {tools_file} に ok と書く
+3. Bash で `echo ok > {tools_bash_file}` を実行する
+4. Write ツールで .agent/smoke_edit.txt に ok と書く
+"""
+
+
+def smoke(cfg: dict, P: settings.Paths, run_dir: Path) -> tuple[bool, list[str]]:
+    """Claude の権限が意図どおりかを、Claude の報告ではなくできたファイルで確かめる。"""
+    agent = P.work / ".agent"
+    agent.mkdir(parents=True, exist_ok=True)
+    probe = [P.tools / "SMOKE_WRITE_TEST.txt", P.tools / "SMOKE_BASH_TEST.txt"]
+    for f in [*probe, agent / "smoke_net.txt", agent / "smoke_read.txt", agent / "smoke_edit.txt"]:
+        f.unlink(missing_ok=True)
+    prompt = SMOKE_PROMPT.format(tools_file=probe[0], tools_bash_file=probe[1])
+    _claude(cfg, P, prompt, run_dir, agent_env(P, P.cache), 12, 600, "smoke")
+    read = lambda n: (agent / n).read_text().strip() if (agent / n).exists() else None
+    bad = []
+    if read("smoke_net.txt") != "blocked":
+        bad.append(f"通信の制限: {read('smoke_net.txt') or 'Bash が動かない'}")
+    if read("smoke_read.txt") != "blocked":
+        bad.append(f"~/keiba-ai の読み取りの制限: {read('smoke_read.txt') or 'Bash が動かない'}")
+    if read("smoke_edit.txt") != "ok":
+        bad.append("作業コピーに書けない")
+    for f in probe:
+        if f.exists():
+            bad.append(f"評価役のフォルダに書けてしまう: {f.name}")
+            f.unlink()
+    return not bad, bad
 
 
 def read_proposal(work: Path) -> dict | None:
@@ -425,6 +472,10 @@ def prepare(cfg: dict, P: settings.Paths, run_id: str, inbox_fetch: bool = True)
     sha = prepare_trees(cfg, P, branch)
     for org in ("JRA", "NAR"):
         baseline(P, sha, org, "explore")
+    # 古い main の採点は直近3つだけ残す
+    for old in sorted(P.cache.glob("base-*"), key=lambda d: d.stat().st_mtime)[:-3]:
+        if old != base_dir(P, sha):
+            shutil.rmtree(old, ignore_errors=True)
     inbox = []
     if inbox_fetch:
         try:
@@ -534,6 +585,20 @@ def cycle(cfg: dict, P: settings.Paths, force: bool = False) -> int:
     except Exception as e:
         log(P, f"準備に失敗しました: {type(e).__name__}: {e}")
         return 1
+    key = f"{git('rev-parse', 'HEAD', cwd=P.tools).strip()}:{claude_version(cfg)}"
+    if state.notes.get("smoke_ok") != key:
+        ok, bad = smoke(cfg, P, P.runs / run_id)
+        if not ok:
+            log(P, f"権限の確認に失敗したので中止します: {' / '.join(bad)}")
+            notify("競馬AI 自動研究", "権限の確認に失敗したので中止しました。logs/runner.log を見てください")
+            git("checkout", "--quiet", "--detach", "--force", meta["base_sha"], cwd=P.work, check=False)
+            git("clean", "-fdxq", cwd=P.work, check=False)
+            return 1
+        state = ledger.State.load(P.state)
+        state.notes["smoke_ok"] = key
+        state.save(P.state)
+        for n in ("smoke_net.txt", "smoke_read.txt", "smoke_edit.txt"):
+            (P.work / ".agent" / n).unlink(missing_ok=True)
     claude = run_claude(cfg, P, P.runs / run_id, meta["base_sha"], base_dir(P, meta["base_sha"]))
     if usage_limited(claude):
         state = ledger.State.load(P.state)
@@ -564,6 +629,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("cycle", help="1サイクル実行する (回数の上限などを満たすときだけ)")
     p.add_argument("--force", action="store_true", help="回数の上限を無視する (電源・容量・ログインの確認は行う)")
     sub.add_parser("status", help="記録と上限の状況を表示する")
+    sub.add_parser("smoke", help="Claude の権限の動作確認だけを行う (ログイン後に一度)")
     p = sub.add_parser("prepare", help="Claude を呼ぶ前までを行い、作業コピーに資料を置く (手動の試運転用)")
     p.add_argument("--no-issues", action="store_true")
     p = sub.add_parser("finish", help="prepare のあとの評価・記録・公開を行う (手動の試運転用)")
@@ -575,6 +641,13 @@ def main(argv=None) -> int:
         return cycle(cfg, P, args.force)
     if args.cmd == "status":
         return status(cfg, P)
+    if args.cmd == "smoke":
+        claude_auth(cfg, P)
+        if not P.work.exists():
+            prepare_trees(cfg, P, "agent/smoke")
+        ok, bad = smoke(cfg, P, P.runs / f"smoke-{ledger.now().strftime('%Y%m%d-%H%M%S')}")
+        print("権限の確認: " + ("問題なし" if ok else " / ".join(bad)))
+        return 0 if ok else 1
     if args.cmd == "prepare":
         meta = prepare(cfg, P, ledger.now().strftime("%Y%m%d-%H%M%S"), inbox_fetch=not args.no_issues)
         print(json.dumps(meta, ensure_ascii=False))
