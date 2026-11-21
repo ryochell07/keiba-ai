@@ -165,6 +165,11 @@ const orgName=o=>o==='JRA'?'中央':'地方';
 const MARKS=['◎','○','▲','△','△'];
 const winOf=rid=>P[rid].filter(p=>p.b==='win').sort((a,b)=>b.p-a.p);
 const markOf=rid=>Object.fromEntries(winOf(rid).slice(0,MARKS.length).map((p,i)=>[p.c,MARKS[i]]));
+// 当たりやすさは◎の勝率で3つに分ける。境目と1着率は研究用データ (2025-03〜2026-02、約1万4千レース) で確かめた値
+const CONF=[[0.5,'堅い','◎の勝率が50%以上','5〜6割'],[0.3,'普通','◎の勝率が30〜50%','3割台'],[0,'混戦','◎の勝率が30%未満','2割台']];
+const confOf=p=>p==null?null:CONF.find(c=>p>=c[0]);
+const confTag=p=>{const c=confOf(p);return c?`<span class="tag">${c[1]}</span>`:''};
+const confNote=p=>{const c=confOf(p);return c?`当たりやすさ <b>${c[1]}</b>（${c[2]}）。過去の研究用データでは、このようなレースで◎が1着になったのは${c[3]}でした。`:''};
 const horseName=(r,u)=>r.horses.find(h=>h.u==u)?.name||'';
 const bestEv=rid=>P[rid].filter(p=>p.ev!=null).sort((a,b)=>b.ev-a.ev)[0];
 // 券種ごとに最も当たりやすい買い目。答え合わせでは「本命の買い目」と呼ぶ
@@ -185,6 +190,7 @@ const sureRows=()=>Object.values(D.backtests).flatMap(b=>b.rows).filter(r=>r.n_b
 function glossary(){const mo=(D.market_only_orgs||[]).map(orgName).join('・');
   return `<details class="card" style="margin-top:14px"><summary>用語の説明</summary><dl class="gl">
   <dt>印（◎○▲△）</dt><dd>勝率の高い順の目印です。◎が1位、○が2位、▲が3位、△が4・5位です。</dd>
+  <dt>当たりやすさ（堅い・普通・混戦）</dt><dd>◎の勝率で分けた目安です。50%以上が堅い、30〜50%が普通、30%未満が混戦です。2025年3月〜2026年2月の研究用データでは、◎が1着になった割合は堅いが5〜6割、普通が3割台、混戦が2割台で、勝率の数字とほぼ一致しました。ただし、◎の単勝の回収率はどの区分でも100%未満（72〜87%）でした。当たりやすいレースほどオッズも低いので、当たりやすさから回収率は読めません。</dd>
   <dt>勝率・複勝率・的中確率</dt><dd>その馬が1着になる確率、複勝が当たる確率、その買い目が当たる確率の推定です。オッズが出る前はAIだけで出し、出た後はAIと単勝オッズを合成します（市場の評価が大部分を占めます）。${mo?mo+'は、オッズが揃うと単勝オッズだけで出します。':''}</dd>
   <dt>期待値</dt><dd>的中確率×オッズ−1 です。+20%なら、推定が正しければ100円あたり平均120円戻る計算です。オッズは発走まで変わります。${sureRows().length?'':'これまでの検証では、期待値プラスの買い目を買い続けても、回収率は100%を確実には超えていません（ランキングの「買い方の実績」）。'}</dd>
   <dt>信頼度 A/B/C</dt><dd>確率の推定がどれだけ安定しているかの目安で、当たりやすさではありません。推定のばらつきが大きい、出走馬の過去の出走が平均3走未満、確率が1%未満、の3つのうち当てはまる数が0ならA、1ならB、2以上ならCです。</dd>
@@ -309,20 +315,21 @@ function raceCard(r){if(done(r))return resultCard(r);
   <div class="names">${esc(r.name||r.class||'')} ${esc(r.grade||'')}</div>`;
   if(!top)return `<button class="card" data-race="${esc(r.id)}">${head}<div class="meta">${st?'AIの予測はありません。':'枠順確定後に予測します。'}</div></button>`;
   return `<button class="card" data-race="${esc(r.id)}">${head}
-  <div class="pick"><span><span class="mk">◎</span><b>${esc(top.c)} ${esc(horseName(r,top.c))}</b></span><span class="meta">勝率 ${pct(top.p)}${top.o?` ・ 単勝 ${num(top.o)}倍${top.pop?` ${top.pop}人気`:''}`:''}</span></div>
+  <div class="pick"><span><span class="mk">◎</span><b>${esc(top.c)} ${esc(horseName(r,top.c))}</b></span><span class="meta">勝率 ${pct(top.p)}${top.o?` ・ 単勝 ${num(top.o)}倍${top.pop?` ${top.pop}人気`:''}`:''}</span>${confTag(top.p)}</div>
   <div class="pick meta">${w.slice(1,3).map((p,i)=>`<span><span class="mk">${MARKS[i+1]}</span>${esc(p.c)} ${esc(horseName(r,p.c))} ${pct(p.p)}</span>`).join('')}</div>
   ${st?'':e?`<div class="top" style="margin-top:4px"><span class="meta">期待値が最も高い買い目 ${esc(label(e.b))} ${esc(e.c)}${(e.f||[]).includes('長期回収率は未検証')?' <span class="tag">未検証</span>':''}</span>${evTxt(e)}</div>`:'<div class="meta" style="margin-top:4px">オッズ取得前のため、期待値はまだありません。</div>'}</button>`}
 // 結果が出たレース: 1〜3着と、◎の着順、本命の買い目で当たった券種
 function resultCard(r){const mk=markOf(r.id),pod=resOf(r).filter(x=>x.f&&x.f<=3),hits=grade(r).filter(x=>x.a);
-  return `<button class="card" data-race="${esc(r.id)}"><div class="top"><b>${r.time||'--:--'} ${esc(r.course)}${r.no}R</b>${topTag(r)}</div>
+  return `<button class="card" data-race="${esc(r.id)}"><div class="top"><b>${r.time||'--:--'} ${esc(r.course)}${r.no}R</b><span>${confTag(winOf(r.id)[0]?.p)} ${topTag(r)}</span></div>
   <div class="names">${esc(r.name||r.class||'')} ${esc(r.grade||'')} ・ ${esc(r.surface||'')}${r.distance||''}m ${r.n||'-'}頭</div>
   ${pod.length?`<div class="pod">${pod.map(x=>`<div><span class="meta">${x.f}着</span><span class="mk">${mk[x.u]||''}</span><span class="nm"><b>${x.u}</b> ${esc(horseName(r,x.u))}</span><span class="meta">${x.pop?x.pop+'人気':''}</span></div>`).join('')}</div>`:'<div class="meta">着順の取り込み待ちです。</div>'}
   <div class="hits">${!winOf(r.id).length?'発走前の予測はありません':hits.length?'的中 '+hits.map(x=>`<span class="tag pos">${esc(label(x.p.b))}</span>`).join(''):'本命の買い目はすべて外れ'}</div></button>`}
 // 選んだ日の答え合わせ。過去の日は開いて、今日は畳んで出す
 function dayCheck(rs,open){const fin=rs.filter(r=>done(r)&&winOf(r.id).length);if(!fin.length)return '';
-  let n=0,w1=0,w3=0,exp=0;const bt={},ev={n:0,h:0,ret:0};
+  let n=0,w1=0,w3=0,exp=0;const bt={},ev={n:0,h:0,ret:0},bd={};
   fin.forEach(r=>{const top=winOf(r.id)[0],x=posOf(r,top.c);
-    if(x&&!VOID.includes(x.st)){n++;exp+=top.p;if(x.f===1)w1++;if(x.f&&x.f<=3)w3++}
+    if(x&&!VOID.includes(x.st)){n++;exp+=top.p;if(x.f===1)w1++;if(x.f&&x.f<=3)w3++;
+      const s=bd[confOf(top.p)[1]]=bd[confOf(top.p)[1]]||{n:0,w:0,e:0};s.n++;s.e+=top.p;if(x.f===1)s.w++}
     grade(r).forEach(g=>{if(g.v)return;const s=bt[g.p.b]=bt[g.p.b]||{n:0,h:0,ret:0};s.n++;if(g.a){s.h++;s.ret+=g.a}});
     if(r.chk){ev.n+=r.chk.n;ev.h+=r.chk.hits.length;ev.ret+=r.chk.ret}});
   const roi=s=>s&&s.n?pct0(s.ret/(s.n*100)):'-';
@@ -332,6 +339,7 @@ function dayCheck(rs,open){const fin=rs.filter(r=>done(r)&&winOf(r.id).length);i
   <div class="tile"><div class="v">${w3}<small>/ ${n}</small></div><div class="l">◎が3着以内</div></div>
   <div class="tile"><div class="v">${roi(bt.win)}</div><div class="l">◎の単勝の回収率</div></div>
   <div class="tile"><div class="v">${ev.n?pct0(ev.ret/(ev.n*100)):'-'}</div><div class="l">期待値プラスの買い目の回収率（${ev.n}点・的中${ev.h}）</div></div></div>
+  <div class="scroll"><table><tr><th>当たりやすさ</th><th>◎が1着</th><th>AIの見込み</th></tr>${CONF.filter(c=>bd[c[1]]).map(([,k])=>`<tr><td>${k}</td><td>${bd[k].w} / ${bd[k].n}</td><td>${bd[k].e.toFixed(1)}回</td></tr>`).join('')}</table></div>
   <details><summary>券種ごとの本命の買い目の成績</summary><div class="scroll"><table><tr><th>券種</th><th>的中</th><th>払戻</th><th>回収率</th></tr>${LIKELY.filter(b=>bt[b]).map(b=>`<tr><td>${esc(label(b))}</td><td>${bt[b].h} / ${bt[b].n}</td><td>${yen(bt[b].ret)}</td><td>${roi(bt[b])}</td></tr>`).join('')}</table></div></details>
   <p class="meta">1点100円で買った計算です。1日分の結果は偶然の影響が大きく、AIの良し悪しは判断できません。長い期間の成績は「分析」の「実運用の成績」で確認できます。</p></details>`}
 function raceDetail(r){const ps=P[r.id],win=winOf(r.id),mk=markOf(r.id),place={};ps.filter(p=>p.b==='place').forEach(p=>place[p.c]=p);
@@ -349,6 +357,7 @@ function raceDetail(r){const ps=P[r.id],win=winOf(r.id),mk=markOf(r.id),place={}
     :`期待値がプラスの買い目は ${nPos}点です。${sureRows().length?'':'ただし、期待値プラスの買い目を過去に買い続けても、回収率は100%を確実には超えていません。'}`;
   return head+wait+`<section class="card"><h3>このレースの見立て</h3>
   <div class="pick">${win.slice(0,3).map((p,i)=>`<span><span class="mk">${MARKS[i]}</span><b>${esc(p.c)}</b> ${esc(horseName(r,p.c))} <span class="meta">${pct(p.p)}</span></span>`).join('')}</div>
+  <p class="meta" style="margin:8px 0 0">${confNote(win[0].p)}</p>
   <div class="meta" style="margin-top:10px">券種ごとに最も当たりやすい買い目</div>
   <div class="scroll"><table><tr><th>券種</th><th>買い目</th><th>的中確率</th><th>オッズ</th><th>期待値</th></tr>${likely.map(p=>`<tr><td>${esc(label(p.b))}</td><td>${esc(p.c)}</td><td>${pct(p.p)}</td><td>${oddsTxt(p)}</td><td>${p.ev==null?'-':sign(p.ev)}</td></tr>`).join('')}</table></div>
   <p class="meta">${evNote}</p></section>
@@ -363,7 +372,7 @@ function resultDetail(r,head){const win=winOf(r.id),mk=markOf(r.id),top=win[0],r
   const topX=top&&posOf(r,top.c);
   const result=`<h2>レース結果</h2><section class="card">${rs.length?`<table class="res">${cols}<tr><th>着</th>${ai?'<th></th>':''}<th class="l">馬</th><th>人気</th>${ai?'<th>AI勝率</th>':''}</tr>${t3.map(row).join('')}</table>
     ${rest.length?`<details><summary>4着以下と取消など ${rest.length}頭</summary><table class="res">${cols}${rest.map(row).join('')}</table></details>`:''}`:'<div class="meta">着順の取り込み待ちです。</div>'}
-    ${topX?`<div class="pick" style="margin-top:8px"><span><span class="mk">◎</span><b>${esc(top.c)}</b> ${esc(horseName(r,top.c))} は</span>${topTag(r).replace('◎ ','')}<span class="meta">発走前の勝率 ${pct(top.p)}</span></div>`:''}</section>`;
+    ${topX?`<div class="pick" style="margin-top:8px"><span><span class="mk">◎</span><b>${esc(top.c)}</b> ${esc(horseName(r,top.c))} は</span>${topTag(r).replace('◎ ','')}<span class="meta">発走前の勝率 ${pct(top.p)}</span>${confTag(top.p)}</div>`:''}</section>`;
   // AIの本命と同じ組み合わせは太字にする
   const payCell=(b,c)=>(r.pay||[]).filter(x=>x.b===b).map(x=>`<div class="pay">${x.c===c?`<b>${esc(x.c)}</b>`:esc(x.c)}<span class="meta">${yen(x.a)}</span></div>`).join('')||'-';
   const others=[...new Set((r.pay||[]).map(x=>x.b))].filter(b=>!g.some(x=>x.p.b===b)).sort((a,b)=>BET_ORDER.indexOf(a)-BET_ORDER.indexOf(b));
