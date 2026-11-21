@@ -29,7 +29,7 @@ PROMPT = Path(__file__).with_name("prompt.md")
 BIN = Path(__file__).with_name("bin")
 USAGE_LIMIT_WORDS = ("usage limit", "limit reached", "limit will reset", "rate limit", "out of extra usage", "weekly limit")
 # Claude に読ませない作業コピー内の文書 (封鎖期間の検証結果が書かれている)
-SEALED_DOCS = ("docs/lab_summary.json", "docs/IMPROVEMENT_REPORT.md", "docs/PROGRESS.md", "README.md")
+SEALED_DOCS = ("docs/lab_summary.json", "docs/IMPROVEMENT_REPORT.md", "docs/PROGRESS.md")
 
 
 class Skip(Exception):
