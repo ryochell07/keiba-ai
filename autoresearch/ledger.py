@@ -62,8 +62,11 @@ def for_agent(entries: list[dict], limit: int = 40) -> list[dict]:
     out = []
     for e in entries[-limit:]:
         ex = (e.get("explore") or {}).get(e.get("primary_track") or "ai") or {}
+        reason = e.get("reason")
+        if e.get("confirm") is not None:      # 理由の文にも確認期間の数値が入るので伏せる
+            reason = {"improved": "探索期間と確認期間の両方で改善"}.get(e.get("status"), "確認期間で基準を満たさなかった (数値は伏せています)")
         out.append({"run": e.get("run_id"), "org": e.get("org"), "category": e.get("category"), "key": e.get("key"), "title": e.get("title"),
-                    "hypothesis": (e.get("hypothesis") or "")[:300], "status": e.get("status"), "reason": e.get("reason"),
+                    "hypothesis": (e.get("hypothesis") or "")[:300], "status": e.get("status"), "reason": reason,
                     "explore_d_log_loss": ex.get("d_ll"), "explore_d_log_loss_ci": ex.get("d_ll_ci"), "explore_d_brier": ex.get("d_brier"),
                     "confirm_passed": None if e.get("confirm") is None else e.get("status") == "improved", "issue": e.get("issue")})
     return out
