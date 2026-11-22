@@ -19,8 +19,8 @@ CATEGORICAL = ["course_code", "surface", "going", "weather", "direction", "sex",
                "grade", "category", "x_course_dist", "x_cond_age"]
 # 追加特徴量のグループ。採否は実験 (keiba lab groups) の結果で決める
 GROUPS = {"speed": "x_speed_", "apt": "x_apt_", "opp": "x_opp_", "pace": "x_pace_", "jk": "x_jk_",
-          "course": "x_course_", "day": "x_day_", "cond": "x_cond_", "pastmkt": "x_pastmkt_"}
-ADOPTED_GROUPS: tuple[str, ...] = ("speed", "apt", "opp", "jk")  # 2026-11-06 の封鎖テストで採用
+          "course": "x_course_", "day": "x_day_", "cond": "x_cond_", "pastmkt": "x_pastmkt_", "pmo": "x_pmo_"}
+ADOPTED_GROUPS: tuple[str, ...] = ("speed", "apt", "opp", "jk", "pmo")  # 2026-11-06 の封鎖テストで採用
 NUMERIC_RACE = ["distance", "dist_bucket", "n_runners", "race_no", "month", "waku", "umaban", "umaban_ratio",
                 "class_ord", "age", "carried_weight", "body_weight", "body_weight_diff", "weight_ratio"]
 # 発走直前まで確定しない項目。朝の予測では欠損になるので、学習時に一定割合を欠損にして慣らす。
@@ -123,6 +123,7 @@ def add_market(df: pd.DataFrame, con: sqlite3.Connection, cutoff_min: int = 10) 
         out[c] = np.nan
     if df.empty:
         return out
+    out = _attach_result_odds(out, con)
     q = pd.read_sql_query(
         """SELECT o.race_id, CAST(o.combo AS INTEGER) AS umaban, o.captured_at, o.odds, o.popularity
            FROM odds_snapshot o JOIN race r USING (race_id)
@@ -144,6 +145,21 @@ def add_market(df: pd.DataFrame, con: sqlite3.Connection, cutoff_min: int = 10) 
     out["market_log_odds"] = np.log(out["market_win_odds"])
     out["market_pop"] = merged["market_pop"].to_numpy()
     out["market_drift"] = (merged["market_win_odds"] / merged["first_odds"]).to_numpy()
+    return out
+
+
+def _attach_result_odds(df: pd.DataFrame, con: sqlite3.Connection) -> pd.DataFrame:
+    """履歴計算用に、各レースの確定単勝オッズを h_pmo_odds として付ける。
+
+    当該レースの値は特徴量に使わず、x_pmo_ で同じ馬の前走以前 (shift) としてだけ使う。"""
+    out = df.copy()
+    q = pd.read_sql_query(
+        """SELECT o.race_id, CAST(o.combo AS INTEGER) AS umaban, o.odds AS h_pmo_odds
+           FROM odds_snapshot o JOIN race r USING (race_id)
+           WHERE o.bet_type='win' AND (o.is_final=1 OR o.captured_at='final') AND r.org=?""",
+        con, params=[df["org"].iloc[0]]).drop_duplicates(["race_id", "umaban"], keep="last")
+    merged = out[["race_id", "umaban"]].merge(q, how="left", on=["race_id", "umaban"])
+    out["h_pmo_odds"] = merged["h_pmo_odds"].to_numpy(dtype=float)
     return out
 
 
@@ -265,6 +281,29 @@ def _extra_features(d: pd.DataFrame, feats: pd.DataFrame) -> pd.DataFrame:
     d["h_pop_ratio"] = past_pop
     a = asof_stats(d, ["jockey_id"], ["h_pop_ratio"], "x_pastmkt_jk")
     x["x_pastmkt_jk_pop"] = a["x_pastmkt_jk_h_pop_ratio_rate"]
+    # --- 過去の市場評価: 前走以前の確定単勝オッズから作る勝率 (当該レースの値は使わない) -----------
+    odds = pd.to_numeric(d["h_pmo_odds"], errors="coerce") if "h_pmo_odds" in d else pd.Series(np.nan, index=d.index)
+    inv = (1.0 / odds.where(odds > 0))
+    complete = inv.notna().groupby(d["race_id"]).transform("all")
+    p_mkt = (inv / inv.groupby(d["race_id"]).transform("sum")).where(complete & d["status"].notna())
+    d["h_pmo_lp"] = np.log(p_mkt * d["n_runners"])
+    d["h_pmo_beat"] = p_mkt.groupby(d["race_id"]).rank(ascending=False) / d["n_runners"] - d["h_fin_ratio"]
+    lp_prev = d.groupby("horse_id", sort=False)["h_pmo_lp"].shift(1)
+    x["x_pmo_last"] = lp_prev
+    for w in (3, 5):
+        x[f"x_pmo_m{w}"] = roll(lp_prev, w)
+    x["x_pmo_max5"] = lp_prev.groupby(by_horse, sort=False).rolling(5, min_periods=1).max().droplevel(0)
+    x["x_pmo_n"] = lp_prev.notna().astype(float).groupby(by_horse, sort=False).cumsum()
+    x["x_pmo_beat_m5"] = roll(d.groupby("horse_id", sort=False)["h_pmo_beat"].shift(1), 5)
+    grp = x["x_pmo_m3"].groupby(d["race_id"])
+    x["x_pmo_rel"] = (x["x_pmo_m3"] - grp.transform("mean")) / grp.transform("std").replace(0, np.nan)
+    x["x_pmo_rank"] = grp.rank(pct=True)
+    # 過去の市場評価をレース内で確率のように正規化する (評価のない馬はそのレースの最低値で埋める)
+    for src, name in ((x["x_pmo_m3"], "m3"), (lp_prev, "last")):
+        filled = src.fillna(src.groupby(d["race_id"]).transform("min"))
+        e = np.exp(filled - filled.groupby(d["race_id"]).transform("max"))
+        x[f"x_pmo_share_{name}"] = np.log(e / e.groupby(d["race_id"]).transform("sum") * d["n_runners"])
+    x["x_pmo_gap_top"] = grp.transform("max") - x["x_pmo_m3"]
     # --- 競走条件 --------------------------------------------------------------------
     text = (d["conditions"].fillna("") if "conditions" in d else pd.Series("", index=d.index)).map(lambda v: unicodedata.normalize("NFKC", v))
     cat = d["category"].fillna("") if "category" in d else pd.Series("", index=d.index)
