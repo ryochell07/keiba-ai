@@ -141,3 +141,72 @@ def prune_combos(combos: dict[str, float], candidates: set[int], top_n: int) -> 
     kept = [(c, p) for c, p in combos.items() if all(int(x) in candidates for x in c.split("-"))]
     kept.sort(key=lambda x: -x[1])
     return dict(kept[:top_n])
+
+
+# --- 評価用の合成: 前の月までの結果だけで、非線形項を含む条件付きロジットを推定する ---------------
+BLEND_L2 = 1e-3
+
+
+def _blend_design(frame) -> np.ndarray:
+    """AI の得点 (レース内で中心化)・市場の対数確率と、その非線形項。
+
+    a * (最大 - a) は、AI がレース内で抜けた馬を推すほど AI の重みが変わる効果を表す。
+    市場が使えない行は市場の項を0にし、AI の項は別の係数で扱う。"""
+    import pandas as pd
+
+    rid = frame["race_id"].to_numpy()
+    a = (frame["score"] / frame["tau1"]).to_numpy(dtype=float)
+    a = a - pd.Series(a).groupby(rid).transform("mean").to_numpy()
+    mx = pd.Series(a).groupby(rid).transform("max").to_numpy()
+    pm = frame["p_mkt"].to_numpy(dtype=float) if "p_mkt" in frame else 1.0 / frame["odds"].to_numpy(dtype=float)
+    ok = (frame["mkt_ok"].fillna(False).astype(bool).to_numpy() if "mkt_ok" in frame else np.ones(len(frame), bool))
+    ok = ok & np.isfinite(pm) & (pm > 0)
+    m = np.where(ok, np.log(np.clip(np.nan_to_num(pm, nan=1.0), 1e-6, 1.0)), 0.0)
+    okf = ok.astype(float)
+    cols = [a * okf, m, m * m, a * m, a * a * okf, a * (mx - a) * okf, a * (1 - okf)]
+    return np.column_stack(cols)
+
+
+def _fit_clogit(X: np.ndarray, race_ids, won: np.ndarray, x0: np.ndarray) -> np.ndarray:
+    from scipy.optimize import minimize
+
+    _, inv = np.unique(np.asarray(race_ids), return_inverse=True)
+    n = inv.max() + 1
+    has = np.zeros(n, bool)
+    has[inv[won]] = True
+    keep = has[inv]
+    X, inv, won = X[keep], np.unique(inv[keep], return_inverse=True)[1], won[keep]
+    n = inv.max() + 1
+    nw = won.sum()
+
+    def f(t):
+        s = X @ t
+        top = np.full(n, -np.inf)
+        np.maximum.at(top, inv, s)
+        e = np.exp(s - top[inv])
+        tot = np.zeros(n)
+        np.add.at(tot, inv, e)
+        p = e / tot[inv]
+        nll = -(s[won] - top[inv[won]] - np.log(tot[inv[won]])).sum() / nw
+        g = (X * p[:, None]).sum(axis=0) - X[won].sum(axis=0)
+        return nll + BLEND_L2 * (t @ t), g / nw + 2 * BLEND_L2 * t
+
+    r = minimize(f, x0, jac=True, method="L-BFGS-B", options=dict(maxiter=500))
+    return r.x
+
+
+def win_probs_from_history(hist, cur) -> np.ndarray:
+    """前の月までの hist で合成の係数を推定し、当月 cur の勝率を返す (レースごとに正規化)。"""
+    import pandas as pd
+
+    Xc = _blend_design(cur)
+    x0 = np.array([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0])
+    won = (hist["won"].to_numpy() == 1) if len(hist) else np.zeros(0, bool)
+    if won.sum() >= 300:
+        t = _fit_clogit(_blend_design(hist), hist["race_id"].to_numpy(), won, x0)
+    else:
+        t = x0
+    s = pd.Series(Xc @ t)
+    rid = cur["race_id"].to_numpy()
+    e = np.exp(s - s.groupby(rid).transform("max")).to_numpy()
+    return e / pd.Series(e).groupby(rid).transform("sum").to_numpy()
