@@ -43,8 +43,15 @@ jobs:
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3.0.1
         if: success() || failure()
         with: {path: public}
-      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
+      # 送った直後の成果物は一覧に出ず「Found 0 artifact(s)」で失敗することがあるので、30秒待って1回だけやり直す
+      - id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
         if: success() || failure()
+        continue-on-error: true
+      - if: (success() || failure()) && steps.deploy.outcome == 'failure'
+        run: sleep 30
+      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
+        if: (success() || failure()) && steps.deploy.outcome == 'failure'
       - name: スケジュール維持
         # 公開リポジトリは無活動が60日続くと定期実行が止まる。main は PR 必須にしたのでコミットはせず、
         # 毎月1日に定期実行のワークフローを API で有効化し直して、無活動の日数を数え直させる
